@@ -48,7 +48,7 @@ def get_quarterly_data(financial_indicator,stocks,quarter):
         factor_values['announce_date'] = announce_dates
         return factor_values
 
-def get_inc_quarter_data(financial_indicator,stocks,quarter):
+def get_yoy_quarterly_data(financial_indicator,stocks,quarter):
     """
     :param financial_indicator: 需要查询的因子 格式例如 fundamentals.financial_indicator_TTM.return_on_equityTTM
     :param stocks: 股票列表 list
@@ -61,6 +61,7 @@ def get_inc_quarter_data(financial_indicator,stocks,quarter):
     current_data['announce_date'] = pd.to_datetime(current_data['announce_date'],format="%Y%m%d")
 
     if str(financial_indicator).startswith("StkBalaGen"):
+        current_data.columns = ['factor_values','announce_date']
         return current_data
     else:
         df['announce_date'] = pd.to_datetime(df['announce_date'],format="%Y%m%d")
@@ -68,6 +69,7 @@ def get_inc_quarter_data(financial_indicator,stocks,quarter):
         previous_data = df.loc[previous_year_quarter]
 
         data = pd.DataFrame(current_data.iloc[:,0]/previous_data.iloc[:,0]-1)
+        data.columns = ['factor_values']
         data['announce_date'] = current_data['announce_date']
         return data
 
@@ -124,13 +126,14 @@ def calc_quarterly_imformationCoefficient(factor_values,groupbyIndustry=False,N=
     return ic
 
 
-def calc_periods_imformationCoefficient(financial_indicator,start_year,end_year,stocksPool,N=22,groupbyIndustry=False):
+def calc_periods_imformationCoefficient(financial_indicator,start_year,end_year,stocksPool,YOY = False,N=22,groupbyIndustry=False):
     """
     :param financial_indicator: 需要查询的因子 格式例如 fundamentals.financial_indicator_TTM.return_on_equityTTM
     :param start_year: 开始年份 Integer
     :param end_year: 结束年份 Integer
     :param stocksPool: 指数股票池, eg. "000300.XSHG","000905.XSHG"
                         Attention please:当groupbyIndustry为True时，stocksPool无效，股票池为全A股
+    :param YOY:是否为同比增长
     :param N:滞后的交易日数目
     :param groupbyIndustry 是否根据申万行业进行分组计算imformation coefficient
     :return: a series like
@@ -167,8 +170,10 @@ def calc_periods_imformationCoefficient(financial_indicator,start_year,end_year,
         print("calculating the quarter === %s"%(q))
         try:
             stocks = all_instruments(type="CS",date=all_end_dates[i]).order_book_id.tolist() if groupbyIndustry else index_components(stocksPool,all_end_dates[i])
-
-            _factor_values = get_quarterly_data(financial_indicator,stocks,q)
+            if YOY:
+                _factor_values = get_yoy_quarterly_data(financial_indicator,stocks,q)
+            else:
+                _factor_values = get_quarterly_data(financial_indicator,stocks,q)
             ic = calc_quarterly_imformationCoefficient(_factor_values,groupbyIndustry=groupbyIndustry,N=N)
             ics[q] = ic
         except:
@@ -215,10 +220,13 @@ ax[3].set_title("净资产收益率")
 
 
 # 计算分行业的IC
-
-ics_roe = calc_periods_imformationCoefficient(financial_indicator_roe,2014,2018,"xxx",True)
-ics_NPM = calc_periods_imformationCoefficient(financial_indicator_NPM,2014,2018,"xxx",True)
-ics_AU = calc_periods_imformationCoefficient(financial_indicator_AU,2014,2018,"xxx",True)
-ics_EM = calc_periods_imformationCoefficient(financial_indicator_EM,2014,2018,"xxx",True)
-
-
+# 【环比】
+ics_roe = calc_periods_imformationCoefficient(financial_indicator_roe,2014,2018,"xxx",YOY = False,N=22,groupbyIndustry=True)
+ics_NPM = calc_periods_imformationCoefficient(financial_indicator_NPM,2014,2018,"xxx",YOY = False,N=22,groupbyIndustry=True)
+ics_AU = calc_periods_imformationCoefficient(financial_indicator_AU,2014,2018,"xxx",YOY = False,N=22,groupbyIndustry=True)
+ics_EM = calc_periods_imformationCoefficient(financial_indicator_EM,2014,2018,"xxx",YOY = False,N=22,groupbyIndustry=True)
+# 【同比】
+ics_roe_yoy = calc_periods_imformationCoefficient(financial_indicator_roe,2014,2018,"xxx",YOY = True,N=22,groupbyIndustry=True)
+ics_NPM_yoy = calc_periods_imformationCoefficient(financial_indicator_NPM,2014,2018,"xxx",YOY = True,N=22,groupbyIndustry=True)
+ics_AU_yoy = calc_periods_imformationCoefficient(financial_indicator_AU,2014,2018,"xxx",YOY = True,N=22,groupbyIndustry=True)
+ics_EM_yoy = calc_periods_imformationCoefficient(financial_indicator_EM,2014,2018,"xxx",YOY = True,N=22,groupbyIndustry=True)
