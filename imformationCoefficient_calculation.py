@@ -1,4 +1,3 @@
-
 import pandas as pd
 import numpy as np
 import scipy.stats as st
@@ -7,6 +6,27 @@ rqdatac.init('rice','rice',('192.168.10.64',16007))
 from datetime import timedelta
 from rqdatac import *
 from datetime import datetime,timedelta
+# rqdatac.init("ricequant", "Ricequant123", ('rqdatad-pro.ricequant.com', 16004))
+
+
+def filter_subnew_stocks(stocks,date,N):
+    """
+    :param stocks: 股票列表, list
+    :param date: str eg. "2018-01-01"
+    :param N: int 次新股过滤的阈值
+    :return:
+    """
+    return [s for s in stocks if instruments(s).days_from_listed(date)>N]
+
+def filter_st_stocks(stocks,date):
+    """
+    :param stocks: 股票列表, list
+    :param date: 交易日
+    :return: list
+    """
+    start_date = get_previous_trading_date(date)
+    st_series = is_st_stock(stocks,start_date=start_date,end_date=date).iloc[-1]
+    return st_series[~st_series].index.tolist()
 
 def get_quarterly_data(financial_indicator,stocks,quarter):
     """
@@ -15,6 +35,7 @@ def get_quarterly_data(financial_indicator,stocks,quarter):
     :param quarter: 财报的年份和季度，例"2017q3"
     :return: 假设该字段位于非资产负债表，则为该股票的财务指标变化率，否则为原始财务值 pandas.DataFrame
     """
+
     df = get_financials(query(financial_indicator,fundamentals.stockcode,fundamentals.announce_date).filter(fundamentals.stockcode.in_(stocks)),quarter=quarter,interval='3q')
 
     def _get_indicator_change(data):
@@ -126,7 +147,7 @@ def calc_quarterly_imformationCoefficient(factor_values,groupbyIndustry=False,N=
     return ic
 
 
-def calc_periods_imformationCoefficient(financial_indicator,start_year,end_year,stocksPool,YOY = False,N=22,groupbyIndustry=False):
+def calc_periods_imformationCoefficient(financial_indicator,start_year,end_year,stocksPool,YOY = False,N=22,groupbyIndustry=False,excludeST=False,excludeSubNew=False,subNewThres=120):
     """
     :param financial_indicator: 需要查询的因子 格式例如 fundamentals.financial_indicator_TTM.return_on_equityTTM
     :param start_year: 开始年份 Integer
@@ -170,6 +191,11 @@ def calc_periods_imformationCoefficient(financial_indicator,start_year,end_year,
         print("calculating the quarter === %s"%(q))
         try:
             stocks = all_instruments(type="CS",date=all_end_dates[i]).order_book_id.tolist() if groupbyIndustry else index_components(stocksPool,all_end_dates[i])
+            if excludeST:
+                stocks = filter_st_stocks(stocks,date=all_end_dates[i])
+            if excludeSubNew:
+                stocks = filter_subnew_stocks(stocks,all_end_dates[i],subNewThres)
+
             if YOY:
                 _factor_values = get_yoy_quarterly_data(financial_indicator,stocks,q)
             else:
@@ -179,7 +205,7 @@ def calc_periods_imformationCoefficient(financial_indicator,start_year,end_year,
         except:
             pass
     if groupbyIndustry:
-        return pd.DataFrame(ics),pd.DataFrame(ics).T.describe()
+        return pd.DataFrame(ics)
     else:
         return pd.Series(ics)
 
