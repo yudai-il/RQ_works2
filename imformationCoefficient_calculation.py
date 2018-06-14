@@ -128,6 +128,7 @@ def calc_quarterly_imformationCoefficient(factor_values,groupbyIndustry=False,N=
     # factor_values['industry'] = shenwan_instrument_industry(factor_values.index.tolist())['index_name']
 
     def _calc_single_returns(stock,date):
+        # print(type(date))
         try:
             _price = get_price(stock,date,date+np.timedelta64(40,"D"),fields='close').iloc[-N:]
             _returns = 0 if len(_price) ==0 else _price[-1]/_price[0]-1
@@ -141,13 +142,14 @@ def calc_quarterly_imformationCoefficient(factor_values,groupbyIndustry=False,N=
     if groupbyIndustry:
         factor_values['industry'] = shenwan_instrument_industry(returns.index.tolist())['index_name']
         factor_values['returns'] = returns
+        factor_values.dropna(inplace=True)
         return factor_values.groupby("industry").apply(lambda x:st.spearmanr(x['factor_values'],x['returns'],nan_policy='omit')[0])
     else:
         ic = st.spearmanr(factor_values['factor_values'],returns,nan_policy='omit')[0]
     return ic
 
 
-def calc_periods_imformationCoefficient(financial_indicator,start_year,end_year,stocksPool,YOY = False,N=22,groupbyIndustry=False,excludeST=False,excludeSubNew=False,subNewThres=120):
+def calc_periods_imformationCoefficient(financial_indicator,start_year,end_year,stocksPool,YOY = False,N=22,groupbyIndustry=False,excludeST=True,excludeSubNew=True,subNewThres=240):
     """
     :param financial_indicator: 需要查询的因子 格式例如 fundamentals.financial_indicator_TTM.return_on_equityTTM
     :param start_year: 开始年份 Integer
@@ -163,27 +165,17 @@ def calc_periods_imformationCoefficient(financial_indicator,start_year,end_year,
                     2014q3   -0.021521
                     2014q4   -0.006395
                     2015q1   -0.059323
-            or a tuple containing two items
-            the first one is IC grouped by industry category,and the second is a description on the first item
-            (            2014q1    2014q2    2014q3
+            or  IC grouped by industry category
+                      2014q1    2014q2    2014q3
             交通运输 -0.053247 -0.128999 -0.073271
             传媒    0.144361 -0.225000  0.057143
             公用事业  0.000000 -0.358101 -0.013416
             农林牧渔  0.328671 -0.420588 -0.135294
             化工    0.069616  0.249936 -0.278250
-            ,
-                            非银金融       食品饮料
-                    count  17.000000  17.000000
-                    mean   -0.061064  -0.002059
-                    std     0.520866   0.235071
-                    min    -1.000000  -0.392157
-                    25%    -0.400000  -0.207430
-                    50%    -0.107143   0.063725
-                    75%     0.300000   0.129412
-                    max     0.872082   0.417647)
+
     """
 
-    mapping_dates = {"q1":"03-31","q2":"06-30",'q3':"09-30",'q4':"12-31"}
+    mapping_dates = {"q1":"04-01","q2":"07-01",'q3':"10-01",'q4':"12-31"}
     all_quarters = sorted([str(i)+str(j) for j in mapping_dates.keys() for i in np.arange(start_year,end_year+1,1)])
     all_end_dates = sorted([str(i)+"-"+ j for j in list(mapping_dates.values()) for i in np.arange(start_year,end_year+1,1)])
     ics = {}
@@ -201,7 +193,10 @@ def calc_periods_imformationCoefficient(financial_indicator,start_year,end_year,
             else:
                 _factor_values = get_quarterly_data(financial_indicator,stocks,q)
             ic = calc_quarterly_imformationCoefficient(_factor_values,groupbyIndustry=groupbyIndustry,N=N)
-            ics[q] = ic
+            if isinstance(ic,pd.DataFrame) and len(ic) == 0:
+                pass
+            else:
+                ics[q] = ic
         except:
             pass
     if groupbyIndustry:
