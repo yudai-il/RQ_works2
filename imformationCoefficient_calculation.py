@@ -149,7 +149,7 @@ def calc_quarterly_imformationCoefficient(factor_values,groupbyIndustry=False,N=
     return ic
 
 
-def calc_periods_imformationCoefficient(financial_indicator,start_year,end_year,stocksPool,YOY = False,N=22,groupbyIndustry=False,excludeST=True,excludeSubNew=True,subNewThres=240):
+def calc_periods_imformationCoefficient(financial_indicator,start_year,end_year,stocksPool,YOY = False,N=22,groupbyIndustry=False,excludeST=True,excludeSubNew=True,subNewThres=365):
     """
     :param financial_indicator: 需要查询的因子 格式例如 fundamentals.financial_indicator_TTM.return_on_equityTTM
     :param start_year: 开始年份 Integer
@@ -212,6 +212,8 @@ financial_indicator_EM = fundamentals.financial_indicator.du_equity_multiplier
 financial_indicator_AU = fundamentals.financial_indicator.du_asset_turnover_ratio
 
 # 计算指数类型IC，不区分行业
+# (financial_indicator,start_year,end_year,stocksPool,YOY = False,N=22,groupbyIndustry=False,excludeST=True,excludeSubNew=True,subNewThres=365):
+
 ics_roe_CSI500 = calc_periods_imformationCoefficient(financial_indicator_roe,2014,2018,"000905.XSHG")
 ics_NPM_CSI500 = calc_periods_imformationCoefficient(financial_indicator_NPM,2014,2018,"000905.XSHG")
 ics_AU_CSI500 = calc_periods_imformationCoefficient(financial_indicator_AU,2014,2018,"000905.XSHG")
@@ -222,23 +224,15 @@ ics_NPM_CSI300 = calc_periods_imformationCoefficient(financial_indicator_NPM,201
 ics_AU_CSI300 = calc_periods_imformationCoefficient(financial_indicator_AU,2014,2018,"000300.XSHG")
 ics_EM_CSI300 = calc_periods_imformationCoefficient(financial_indicator_EM,2014,2018,"000300.XSHG")
 
-net_profit_margin = pd.concat([ics_NPM_CSI500,ics_NPM_CSI300],axis=1)
-equity_multiplier = pd.concat([ics_EM_CSI500,ics_EM_CSI300],axis=1)
-assets_turnover = pd.concat([ics_AU_CSI500,ics_AU_CSI300],axis=1)
-return_on_equity = pd.concat([ics_roe_CSI500,ics_roe_CSI300],axis=1)
+ics_roe_CSI500_yoy = calc_periods_imformationCoefficient(financial_indicator_roe,2014,2018,"000905.XSHG",YOY = False)
+ics_NPM_CSI500_yoy = calc_periods_imformationCoefficient(financial_indicator_NPM,2014,2018,"000905.XSHG",YOY = False)
+ics_AU_CSI500_yoy = calc_periods_imformationCoefficient(financial_indicator_AU,2014,2018,"000905.XSHG",YOY = False)
+ics_EM_CSI500_yoy = calc_periods_imformationCoefficient(financial_indicator_EM,2014,2018,"000905.XSHG",YOY = False)
 
-import matplotlib.pyplot as plt
-fig, ax = plt.subplots(2,2,sharex=True,figsize=(8,6))
-ax = ax.flatten()
-net_profit_margin.plot(kind='bar',ax=ax[0])
-ax[0].set_title("销售净利率")
-equity_multiplier.plot(kind='bar',ax=ax[1])
-ax[1].set_title("权益乘数")
-assets_turnover.plot(kind='bar',ax=ax[2])
-ax[2].set_title("总资产周转率")
-return_on_equity.plot(kind='bar',ax=ax[3])
-ax[3].set_title("净资产收益率")
-
+ics_roe_CSI300_yoy = calc_periods_imformationCoefficient(financial_indicator_roe,2014,2018,"000300.XSHG",YOY = False)
+ics_NPM_CSI300_yoy = calc_periods_imformationCoefficient(financial_indicator_NPM,2014,2018,"000300.XSHG",YOY = False)
+ics_AU_CSI300_yoy = calc_periods_imformationCoefficient(financial_indicator_AU,2014,2018,"000300.XSHG",YOY = False)
+ics_EM_CSI300_yoy = calc_periods_imformationCoefficient(financial_indicator_EM,2014,2018,"000300.XSHG",YOY = False)
 
 # 计算分行业的IC
 # 【环比】
