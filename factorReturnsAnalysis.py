@@ -54,7 +54,7 @@ def calc_cummalativeReturns(factor_values, quantiles, bins=None, N=22):
     factor_values["returns"] = [_calc_Returns(i[0], i[1]['announce_date']) for i in factor_values.iterrows()]
     return factor_values.groupby("quantiles")['returns'].mean()
 
-def calc_periods_Returns(financial_indicator,start_year,end_year, quantiles,stocksPool,YOY = False,bins=None, N=22,excludeST=True,excludeSubNew=True,subNewThres=365):
+def calc_periods_Returns(financial_indicator,start_year,end_year, quantiles,stocksPool,industry,YOY = False,bins=None, N=22,excludeST=True,excludeSubNew=True,subNewThres=365):
     mapping_dates = {"q1":"04-01","q2":"07-01",'q3':"10-01",'q4':"12-31"}
     all_quarters = sorted([str(i)+str(j) for j in mapping_dates.keys() for i in np.arange(start_year,end_year+1,1)])
     all_end_dates = sorted([str(i)+"-"+ j for j in list(mapping_dates.values()) for i in np.arange(start_year,end_year+1,1)])
@@ -65,6 +65,9 @@ def calc_periods_Returns(financial_indicator,start_year,end_year, quantiles,stoc
         print("calculating the quarter === %s"%(q))
         try:
             stocks = all_instruments(type="CS",date=all_end_dates[i]).order_book_id.tolist() if stocksPool=="A" else index_components(stocksPool,all_end_dates[i])
+            industry_code = shenwan_instrument_industry(stocks,date=all_end_dates[i])['index_name']
+            stocks = industry_code[industry_code == industry].index.tolist()
+
             if excludeST:
                 stocks = filter_st_stocks(stocks,date=all_end_dates[i])
             if excludeSubNew:
@@ -75,9 +78,7 @@ def calc_periods_Returns(financial_indicator,start_year,end_year, quantiles,stoc
             else:
                 _factor_values = get_quarterly_data(financial_indicator,stocks,q)
 
-            returns[q] = calc_cummalativeReturns(_factor_values, quantiles, bins=None, N=22)
+            returns[q] = calc_cummalativeReturns(_factor_values, quantiles, bins=None, N=N)
         except:
             pass
     return pd.DataFrame(returns)
-
-
