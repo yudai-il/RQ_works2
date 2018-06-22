@@ -105,5 +105,5 @@ benchmark = "000300.XSHG"
 N=126
 portfolios = pd.Series(scores,index_components("000906.XSHG",date=date))
 
-trackingcalc_tracking_error1(portfolios,date,benchmark,N)
-trackingError1 = calc_tracking_error2(portfolios,date,benchmark,N)
+trackingError1 = calc_tracking_error1(portfolios,date,benchmark,N)
+trackingError2 = calc_tracking_error2(portfolios,date,benchmark,N)
