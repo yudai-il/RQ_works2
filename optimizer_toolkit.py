@@ -1,13 +1,8 @@
 import pandas as pd
 import numpy as np
-import scipy.stats as st
 import rqdatac
 rqdatac.init('rice','rice',('192.168.10.64',16007))
-#rqdatac.init("ricequant", "Ricequant123", ('rqdatad-pro.ricequant.com', 16004))
-
 from rqdatac import *
-from scipy.optimize import minimize
-from sklearn.covariance import LedoitWolf
 
 def get_subnew_stocks(stocks,date,N):
     """
@@ -50,7 +45,7 @@ def winsorized_std(rawData, n=3):
     return rawData.clip(mean - std * n, mean + std * n)
 
 
-def trackingErrorConstraints(x,benchmark,union_stks,date,covMat):
+def trackingError(x,benchmark,union_stks,date,covMat):
     """
     跟踪误差约束
     :param x: 权重
@@ -83,12 +78,14 @@ def industry_constraint(order_book_ids,industryConstraints,date):
 
     print("WARNING order_book_ids 中没有股票属于{}行业, 已忽略其行业约束".format(missing_industry))
 
-    for industry in industryConstraints:
+    constrainted_industry = sorted(set(industries_labels)&set(industryConstraints.keys()))
+
+    for industry in constrainted_industry:
 
         industry_stock_position = industries_labels.index.get_indexer(industries_labels[industries_labels==industry].index)
 
-        down,upper = industryConstraints.get(industry)[0],industryConstraints.get(industry)[1]
-        constraints.extend([{"type":"ineq","fun":lambda x:sum(x[i] for i in industry_stock_position)-down},
+        lower,upper = industryConstraints.get(industry)[0],industryConstraints.get(industry)[1]
+        constraints.extend([{"type":"ineq","fun":lambda x:sum(x[i] for i in industry_stock_position)-lower},
                             {"type":"ineq","fun":lambda x:sum(x[i] for i in -industry_stock_position)+upper}])
 
     return constraints
@@ -152,12 +149,11 @@ def portfolio_industry_neutralize(order_book_ids, date,industryNeutral="*", benc
 
     return constraints
 
-def checkParameterValidity(constraints):
+def validateConstraints(constraints):
     constraints = constraints.values()
-    upperCumSum = np.sum([s[1] for s in constraints])
-    downCumsum = np.sum(s[0] for s in constraints)
+    lowerCumsum = np.sum(s[0] for s in constraints)
     cons1 = False in [s[0]<=s[1] for s in constraints]
-    if upperCumSum>1 or downCumsum>1 or cons1:
+    if lowerCumsum>1 or cons1:
         raise Exception("请确认上下界的合理性")
 
 
