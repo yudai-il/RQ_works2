@@ -5,7 +5,6 @@ import rqdatac
 rqdatac.init('rice','rice',('192.168.10.64',16007))
 #rqdatac.init("ricequant", "Ricequant123", ('rqdatad-pro.ricequant.com', 16004))
 
-from datetime import timedelta
 from rqdatac import *
 from datetime import datetime,timedelta
 from scipy.optimize import minimize
