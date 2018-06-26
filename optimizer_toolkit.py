@@ -160,5 +160,43 @@ def checkParameterValidity(constraints):
     if upperCumSum>1 or downCumsum>1 or cons1:
         raise Exception("请确认上下界的合理性")
 
-# def
+
+def benchmark_industry_matching(order_book_ids, benchmark, date):
+    """
+    返回未配置行业的权重之和/未配置每个行业的权重
+    :param order_book_ids:
+    :param benchmark:
+    :param date:
+    :return:
+    """
+
+    # 获取基准行业配置信息
+
+    benchmark_components = index_weights(benchmark, date)
+
+    benchmark_industry_label = shenwan_instrument_industry(list(benchmark_components.index), date)['index_name']
+
+    benchmark_merged_df = pd.concat([benchmark_components, benchmark_industry_label], axis=1)
+
+    benchmark_industry_allocation = benchmark_merged_df.groupby(['index_name']).sum()
+
+    # 获取投资组合行业配置信息
+
+    portfolio_industry_label = shenwan_instrument_industry((order_book_ids), date)['index_name']
+
+    portfolio_industry = list(portfolio_industry_label.unique())
+
+    missing_industry = list(set(benchmark_industry_allocation.index) - set(portfolio_industry))
+
+    # 若投资组合均配置了基准所包含的行业，则不需要进行配齐处理
+
+    if (len(missing_industry) == 0):
+
+        return None, None
+
+    else:
+
+        matching_component = benchmark_merged_df.loc[benchmark_merged_df['index_name'].isin(missing_industry)]
+
+    return matching_component['weight'].sum(), matching_component['weight']
 
