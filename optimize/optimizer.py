@@ -1,30 +1,29 @@
 import pandas as pd
 import numpy as np
 import scipy.stats as st
+import sys
+sys.path.append("..")
 import rqdatac
 rqdatac.init('rice','rice',('192.168.10.64',16007))
-from rqdatac import *
-from datetime import datetime,timedelta
 from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
-from.optimizer_toolkit import *
+from .optimizer_toolkit import *
 
 
-# TODO: handling industry constraints
-def indicator_optimization(indicator_series, date, cov_estimator=True,
-                        window=126, benchmark="000300.XSHG",options=None):
+def indicator_optimization(indicator_series, date, cov_estimator="shrinkage",riskThreshold=None,
+                        window=126,options={}):
     """
     :param indicator_series: 指标序列. 指标应为浮点型变量(例如个股市盈率/个股预期收益/个股夏普率)
     :param date: 优化日期 如"2018-06-20"
 
     # TODO 风险约束
-    :param cov_estimator: str 风险约束
+    :param cov_estimator: str 波动率约束
             可选参数：
                 -"shrinkage" 默认值; 对收益的协方差矩阵进行收缩矩阵
                 -"empirical" 对收益进行普通的协方差计算
                 -"multifactor" 因子协方差矩阵
     :param window: int 计算收益率协方差矩阵时的回溯交易日数目 默认为126
-
+    :param riskThreshold: float 投资组合波动率
 
     # TODO options
     :param options dict,优化器的可选参数，该字典接受如下参数选项
@@ -36,7 +35,10 @@ def indicator_optimization(indicator_series, date, cov_estimator=True,
                 - industryConstraints:dict 行业的权重上下限
                         1、{'*': (0, 0.03)},则所有行业权重都在0-3%之间;
                         2、{'银行':(0,0.3),'房地产':(0,0.4)},则银行行业的权重在0-30%，房地产行业的权重在0-40%之间
-
+                - cov_estimator:跟踪误差的协方差矩阵约束
+                        可选参数
+                        -"shrinkage" 默认值; 对收益的协方差矩阵进行收缩矩阵
+                        -"empirical" 对收益进行普通的协方差计算
                 - benchmark: string 组合跟踪的基准指数, 默认为"000300.XSHG"
                 - trackingErrorThreshold: float 可容忍的最大跟踪误差
                 - industryNeutral: list 设定投资组合相对基准行业存在偏离的行业
@@ -50,14 +52,22 @@ def indicator_optimization(indicator_series, date, cov_estimator=True,
 
     # 跟踪误差的约束
     trackingErrorThreshold = options.get("trackingErrorThreshold")
-
+    benchmark = "000300.XSHG" if options.get("benchmark") is None else options.get("benchmark")
     # 自定义的个股或者行业上下界
     bounds = {} if options.get("bounds") is None else options.get("bounds")
     industryConstraints = {} if options.get("industryConstraints") is None else options.get("industryConstraints")
 
     # 自定义相对基准的各种偏离 TODO 加入判断是否为空
-    industryNeutral,industryDeviation=options.get('industryNeutral'),options.get('industryDeviation')
+    industryNeutral,industryDeviation = options.get('industryNeutral'),options.get('industryDeviation')
     styleNeutral, styleDeviation = options.get("styleNeutral"),options.get("styleDeviation")
+
+    industryCons = (industryNeutral is None)^(industryDeviation is None)
+    styleCons = (styleNeutral is None)^(styleDeviation is None)
+
+    if industryCons or styleCons:
+        raise Exception("请同时指定行业偏离的列表或偏离上下限")
+
+    cov_estimator_options = options.get('cov_estimator')
 
     industryMatching = options.get("industryMatching")
 
@@ -72,17 +82,23 @@ def indicator_optimization(indicator_series, date, cov_estimator=True,
     validateConstraints(weighted_stocks, bounds, industryConstraints, date)
 
     # 获得成分股和传入的股票列表的并集
+
     _index_components = index_components(benchmark, date=date)
     union_stks = sorted(set(_index_components).union(set(weighted_stocks)))
     start_date = pd.Timestamp(date) - np.timedelta64(window*2, "D")
 
-    subnew_stks = []
-    suspended_stks = []
-    # FIXME 可能不仅仅是跟踪误差约束 0
-    if trackingErrorThreshold is not None:
-        subnew_stks = get_subnew_stocks(union_stks, date, window)
-        suspended_stks = get_suspended_stocks(union_stks, start_date, date, window)
-        union_stks = sorted(set(union_stks) - set(subnew_stks) - set(suspended_stks))
+    subnew_stks = get_subnew_stocks(union_stks, date, window)
+    suspended_stks = get_suspended_stocks(union_stks, start_date, date, window)
+    union_stks = sorted(set(union_stks) - set(subnew_stks) - set(suspended_stks))
+
+    daily_returns = get_price(union_stks, start_date, date, fields="close").pct_change().dropna(how='all').iloc[-window:]
+    # covariance matrix for assets returns
+    lw = LedoitWolf()
+    # FIXME 暂时，将增加种类
+    covMat = lw.fit(daily_returns).covariance_ if cov_estimator == "shrinkage" else daily_returns.cov()
+    covMat_option = lw.fit(daily_returns).covariance_ if cov_estimator_options=="shrinkage" else daily_returns.cov()
+
+    print(np.linalg.cond(covMat))
 
     # 行业约束-1/偏离度-2/自定义 (待测)
     if isinstance(industryNeutral,list):
@@ -113,16 +129,15 @@ def indicator_optimization(indicator_series, date, cov_estimator=True,
     bounds.update(bnds1)
     bnds = tuple([bounds.get(s) if s in bounds else (0, 1) for s in union_stks])
 
-    daily_returns = get_price(union_stks, start_date, date, fields="close").pct_change().dropna(how='all').iloc[
-                    -window:]
-    # covariance matrix for assets returns
-    lw = LedoitWolf()
-    # FIXME 暂时，将增加种类
-    covMat = lw.fit(daily_returns).covariance_ if cov_estimator=="shrinkage" else daily_returns.cov()
-    print(np.linalg.cond(covMat))
+    constraints = [{"type": "eq", "fun": lambda x: sum(x) - 1}]
+    # 投资组合波动率约束
 
-    # 跟踪误差的约束 结合 行业约束
-    constraints = [{"type": "eq", "fun": lambda x: sum(x) - 1}] if trackingErrorThreshold is None else [{"type": "eq", "fun": lambda x: sum(x) - 1},{"type": "ineq", "fun": lambda x: -np.sqrt(trackingError(x,benchmark,union_stks,date,covMat)) + trackingErrorThreshold}]
+    if riskThreshold is not None:
+        constraints.append({"type":"ineq","fun":lambda x: -portfolioRisk(x,covMat)+riskThreshold})
+    # 跟踪误差约束
+    if trackingErrorThreshold is not None:
+        constraints.append({"type":"ineq","fun":lambda x: -trackingError(x,benchmark,union_stks,date,covMat_option) + trackingErrorThreshold})
+
     constraints.extend(constraints_industry)
     constraints = tuple(constraints)
 
@@ -143,4 +158,5 @@ def indicator_optimization(indicator_series, date, cov_estimator=True,
         # 获得未分配行业的权重与成分股权重
         undistributedWeight,supplementedStocks = benchmark_industry_matching(union_stks, benchmark, date)
         optimized_weight = pd.concat([optimized_weight*(1-undistributedWeight),supplementedStocks])
+
     return optimized_weight
