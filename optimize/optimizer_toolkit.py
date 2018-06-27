@@ -62,6 +62,15 @@ def trackingError(x,benchmark,union_stks,date,covMat):
     result = np.sqrt(np.dot(np.dot(np.matrix(X), covMat * 252), np.matrix(X).T).A1[0])
     return result
 
+def portfolioRisk(x,covMat):
+    """
+    计算投资组合波动率
+    :param x:
+    :param covMat:
+    :return:
+    """
+    return np.sqrt(np.dot(np.dot(np.matrix(x),covMat*252),np.matrix(x).T).A1[0])
+
 
 def industry_constraint(order_book_ids,industryConstraints,date):
     """
@@ -149,8 +158,12 @@ def validateConstraints(order_book_ids,bounds,industryConstraints,date):
     def _boundsCheck(bounds):
         bounds = bounds.values()
         lowerCumsum = np.sum(s[0] for s in bounds)
-        cons1 = False in [s[0]<=s[1] for s in bounds]
-        if lowerCumsum>1 or cons1:
+        upperCumsum = np.sum(s[1] for s in bounds)
+
+        cons1 = (False in [s[0]<=s[1] and s[0]>0 for s in bounds])
+
+        # 假设下限之和>1 或者 上限之和<1 或者某资产的上界小于下界，某一资产的下界小于0
+        if len(bounds) > 0 and (lowerCumsum>1 or cons1 or upperCumsum<1):
             raise Exception("请确认个股或行业上下界的合理性")
     _boundsCheck(bounds)
     _boundsCheck(industryConstraints)
