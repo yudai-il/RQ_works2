@@ -74,10 +74,6 @@ def industry_constraint(order_book_ids,industryConstraints,date):
     constraints = []
     industries_labels = shenwan_instrument_industry(order_book_ids,date)['index_name']
 
-    missing_industry = set(industryConstraints.keys())- set(industries_labels)
-
-    print("WARNING order_book_ids 中没有股票属于{}行业, 已忽略其行业约束".format(missing_industry))
-
     constrainted_industry = sorted(set(industries_labels)&set(industryConstraints.keys()))
 
     for industry in constrainted_industry:
@@ -149,12 +145,20 @@ def portfolio_industry_neutralize(order_book_ids, date,industryNeutral="*", benc
 
     return constraints
 
-def validateConstraints(constraints):
-    constraints = constraints.values()
-    lowerCumsum = np.sum(s[0] for s in constraints)
-    cons1 = False in [s[0]<=s[1] for s in constraints]
-    if lowerCumsum>1 or cons1:
-        raise Exception("请确认上下界的合理性")
+def validateConstraints(order_book_ids,bounds,industryConstraints,date):
+    def _boundsCheck(bounds):
+        bounds = bounds.values()
+        lowerCumsum = np.sum(s[0] for s in bounds)
+        cons1 = False in [s[0]<=s[1] for s in bounds]
+        if lowerCumsum>1 or cons1:
+            raise Exception("请确认个股或行业上下界的合理性")
+    _boundsCheck(bounds)
+    _boundsCheck(industryConstraints)
+
+    missing_industry = set(industryConstraints)- set(shenwan_instrument_industry(order_book_ids,date)['index_name'])
+    if missing_industry:
+        print("WARNING order_book_ids 中没有股票属于{}行业, 已忽略其行业约束".format(missing_industry))
+
 
 
 def benchmark_industry_matching(order_book_ids, benchmark, date):
