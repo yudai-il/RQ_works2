@@ -80,7 +80,7 @@ def noisy_stocks_filter(stocks,date,subnewThres=350,percentileThres=5):
 
     small_size_stocks = small_size_filter(stocks,date,percentileThres)
 
-    filtered_stocks = set(filtered_stocks)&set(low_liquidity_stocks)&set(small_size_stocks)
+    filtered_stocks = sorted(set(filtered_stocks)&set(low_liquidity_stocks)&set(small_size_stocks))
     return filtered_stocks
 
 
@@ -94,6 +94,7 @@ def get_explict_factor_returns(date):
 
     all_a_stocks = rqdatac.all_instruments(type="CS",date=previous_trading_date).order_book_id.tolist()
     all_a_stocks = noisy_stocks_filter(all_a_stocks,previous_trading_date)
+    # print(all_a_stocks,previous_trading_date)
     factor_exposures = rqdatac.get_style_factor_exposure(all_a_stocks, previous_trading_date, previous_trading_date, "all").sort_index()
     factor_exposures.index=factor_exposures.index.droplevel(1)
     sizeBeta = factor_exposures[['size','beta']]
@@ -158,4 +159,3 @@ def calc_index_explict_factor_returns(indexCode,date):
         return priceChange[long_stockList].mean() - priceChange[short_stocksList].mean()
 
     return factor_exposures.apply(lambda x:_calc_single_explict_returns(x.name))
-
