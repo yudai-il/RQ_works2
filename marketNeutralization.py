@@ -75,8 +75,13 @@ def noisy_stocks_filter(stocks,date,subnewThres=350,percentileThres=5):
     filtered_stocks = st_stocks_filter(stocks,date)
     filtered_stocks = subnew_stocks_filter(filtered_stocks,date,subnewThres)
     filtered_stocks = suspended_stocks_filter(filtered_stocks, date)
-    filtered_stocks = low_liquidity_filter(filtered_stocks,date,percentileThres)
-    filtered_stocks = small_size_filter(filtered_stocks,date,percentileThres)
+
+    # 剔除全样本中的低流动性和小市值股票
+    low_liquidity_stocks = low_liquidity_filter(stocks,date,percentileThres)
+
+    small_size_stocks = small_size_filter(stocks,date,percentileThres)
+
+    filtered_stocks = set(filtered_stocks)&set(low_liquidity_stocks)&set(small_size_stocks)
     return filtered_stocks
 
 
