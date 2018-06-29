@@ -103,10 +103,10 @@ def get_explict_factor_returns(date):
     priceChange = closePrice.pct_change().iloc[-1]
 
     index_mapping = {"csi_300":'000300.XSHG',"csi_500":"000905.XSHG","csi_800":"000906.XSHG"}
-    all_stocks = {index:rqdatac.index_components(index_mapping.get(index)) for index in index_mapping}
+    all_stocks = {index:rqdatac.index_components(index_mapping.get(index),date=previous_trading_date) for index in index_mapping}
     all_stocks['whole_market'] = filtered_stocks
 
-    def _calc_explictRetrns_with_stocksList(stocksList):
+    def _calc_explictRetruns_with_stocksList(stocksList):
         # 根据股票池计算收益率
         _sizeBeta = factor_exposures[['size','beta']].loc[stocksList]
 
@@ -129,7 +129,5 @@ def get_explict_factor_returns(date):
 
         return priceChange[long_stockList].mean() - priceChange[short_stocksList].mean()
 
-    results = {key: _calc_explictRetrns_with_stocksList(all_stocks.get(key)) for key in all_stocks}
+    results = {key: _calc_explictRetruns_with_stocksList(all_stocks.get(key)) for key in all_stocks}
     return pd.DataFrame(results)[['whole_market','csi_300','csi_500','csi_800']]
-
-get_explict_factor_returns("2017-06-01")
