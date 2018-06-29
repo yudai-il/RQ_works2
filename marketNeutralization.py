@@ -4,10 +4,10 @@ from datetime import datetime,timedelta
 # from .optimizer_toolkit import *
 
 import rqdatac
-rqdatac.init('rice','rice',('192.168.10.64',16008))
+# rqdatac.init('rice','rice',('192.168.10.64',16008))
 from functools import reduce
 
-
+rqdatac.init('rice', 'rice', ('192.168.10.64', 16009))
 
 
 def subnew_stocks_filter(stocks,date,subnewThres=5):
@@ -18,7 +18,6 @@ def subnew_stocks_filter(stocks,date,subnewThres=5):
     :param N: int 次新股过滤的阈值
     :return: list 列表中的次新股
     """
-    # return [(rqdatac.instruments(s).listed_date) for s in stocks]
     return [s for s in stocks if (pd.Timestamp(date) - pd.Timestamp(rqdatac.instruments(s).listed_date)).days>subnewThres]
 
 def st_stocks_filter(stocks,date):
@@ -37,9 +36,9 @@ def suspended_stocks_filter(stocks,date):
     :param date: 检验停牌日期
     :return: list
     """
-    # volume = rqdatac.get_price(stocks,start_date=date,end_date=date,fields="volume").iloc[0]
-    # return volume[volume>0].index.tolist()
-    return [s for s in stocks if not rqdatac.is_suspended(s,start_date=date,end_date=date).values[0,0]]
+    volume = rqdatac.get_price(stocks,start_date=date,end_date=date,fields="volume").iloc[0]
+    return volume[volume>0].index.tolist()
+    # return [s for s in stocks if not rqdatac.is_suspended(s,start_date=date,end_date=date).values[0,0]]
 
 def low_liquidity_filter(stocks,date,percentileThres):
     """
@@ -88,7 +87,7 @@ def noisy_stocks_filter(stocks,date,subnewThres=350,percentileThres=5):
 def get_explict_factor_returns(date):
     """
     :param date:日期
-    :return:
+    :return: pandas.Series
     """
 
     previous_trading_date = rqdatac.get_previous_trading_date(date)
@@ -97,9 +96,9 @@ def get_explict_factor_returns(date):
     all_a_stocks = noisy_stocks_filter(all_a_stocks,previous_trading_date)
     factor_exposures = rqdatac.get_style_factor_exposure(all_a_stocks, previous_trading_date, previous_trading_date, "all").sort_index()
     factor_exposures.index=factor_exposures.index.droplevel(1)
-    beta_size = factor_exposures[['size','beta']]
+    sizeBeta = factor_exposures[['size','beta']]
 
-    quantileGroup = beta_size.apply(lambda x:pd.cut(x,bins=3,labels=False)+1).reset_index()
+    quantileGroup = sizeBeta.apply(lambda x:pd.cut(x,bins=3,labels=False)+1).reset_index()
     quantileStocks = quantileGroup.groupby(['size','beta']).apply(lambda x:x.index.tolist())
     market_neutralize_stocks = quantileStocks.apply(
         lambda x: pd.Series(all_a_stocks).loc[x].values.tolist()).values.tolist()
@@ -129,8 +128,8 @@ def calc_index_explict_factor_returns(indexCode,date):
 
     previous_trading_date = rqdatac.get_previous_trading_date(date)
 
-    indexComponents = rqdatac.index_components(indexCode,date=date)
-
+    indexComponents = rqdatac.index_components(indexCode,date=previous_trading_date)
+    # print(indexComponents,previous_trading_date)
     factor_exposures = rqdatac.get_style_factor_exposure(indexComponents, previous_trading_date, previous_trading_date, "all").sort_index()
     factor_exposures.index=factor_exposures.index.droplevel(1)
     sizeBeta = factor_exposures[['size','beta']]
@@ -139,6 +138,10 @@ def calc_index_explict_factor_returns(indexCode,date):
     quantileStocks = quantileGroup.groupby(['size','beta']).apply(lambda x:x.index.tolist())
     market_neutralize_stocks = quantileStocks.apply(
         lambda x: pd.Series(indexComponents).loc[x].values.tolist()).values.tolist()
+
+    closePrice = rqdatac.get_price(indexComponents, rqdatac.get_previous_trading_date(previous_trading_date),
+                                   previous_trading_date, fields="close")
+    priceChange = closePrice.pct_change().iloc[-1]
 
     def _calc_single_explict_returns(factor):
 
@@ -152,8 +155,7 @@ def calc_index_explict_factor_returns(indexCode,date):
         short_stocksList = list(reduce(lambda x,y:set(x)|set(y),np.array([s for i,s in enumerate(deuceResults) if i%2==0])))
         long_stockList = list(reduce(lambda x,y:set(x)|set(y),np.array([s for i,s in enumerate(deuceResults) if i%2==1])))
 
-        closePrice = rqdatac.get_price_change_rate(indexComponents,date,date).iloc[0]
-        return closePrice[long_stockList].mean() - closePrice[short_stocksList].mean()
+        return priceChange[long_stockList].mean() - priceChange[short_stocksList].mean()
 
     return factor_exposures.apply(lambda x:_calc_single_explict_returns(x.name))
 
