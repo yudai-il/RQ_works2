@@ -84,7 +84,7 @@ def noisy_stocks_filter(stocks,date,subnewThres=350,percentileThres=5):
     return filtered_stocks
 
 
-def get_explict_factor_returns(date):
+def get_explicit_factor_returns(date):
     """
     :param date:日期
     :return: pandas.Series
@@ -106,7 +106,7 @@ def get_explict_factor_returns(date):
     all_stocks = {index:rqdatac.index_components(index_mapping.get(index),date=previous_trading_date) for index in index_mapping}
     all_stocks['whole_market'] = filtered_stocks
 
-    def _calc_explictReturns_with_stocksList(stocksList):
+    def _calc_explicitReturns_with_stocksList(stocksList):
         # 根据股票池计算收益率
         _sizeBeta = factor_exposures[['size','beta']].loc[stocksList]
 
@@ -114,9 +114,9 @@ def get_explict_factor_returns(date):
         _quantileStocks = _quantileGroup.groupby(['size','beta']).apply(lambda x:x.index.tolist())
         market_neutralize_stocks = _quantileStocks.apply(
             lambda x: pd.Series(stocksList).loc[x].values.tolist()).values.tolist()
-        return factor_exposures.loc[stocksList].apply(lambda x,y=market_neutralize_stocks:_calc_single_explict_returns(x,y))
+        return factor_exposures.loc[stocksList].apply(lambda x,y=market_neutralize_stocks:_calc_single_explicit_returns(x,y))
 
-    def _calc_single_explict_returns(_factor_exposure,market_neutralize_stocks):
+    def _calc_single_explicit_returns(_factor_exposure,market_neutralize_stocks):
         # 计算单一因子收益率
         def _deuce(series):
             median = series.median()
@@ -129,5 +129,5 @@ def get_explict_factor_returns(date):
 
         return priceChange[long_stockList].mean() - priceChange[short_stocksList].mean()
 
-    results = {key: _calc_explictReturns_with_stocksList(all_stocks.get(key)) for key in all_stocks}
+    results = {key: _calc_explicitReturns_with_stocksList(all_stocks.get(key)) for key in all_stocks}
     return pd.DataFrame(results)[['whole_market','csi_300','csi_500','csi_800']]
