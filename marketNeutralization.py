@@ -93,24 +93,31 @@ def get_explict_factor_returns(date):
     previous_trading_date = rqdatac.get_previous_trading_date(date)
 
     all_a_stocks = rqdatac.all_instruments(type="CS",date=previous_trading_date).order_book_id.tolist()
-    all_a_stocks = noisy_stocks_filter(all_a_stocks,previous_trading_date)
+    filtered_stocks = noisy_stocks_filter(all_a_stocks,previous_trading_date)
     # print(all_a_stocks,previous_trading_date)
     factor_exposures = rqdatac.get_style_factor_exposure(all_a_stocks, previous_trading_date, previous_trading_date, "all").sort_index()
     factor_exposures.index=factor_exposures.index.droplevel(1)
-    sizeBeta = factor_exposures[['size','beta']]
-
-    quantileGroup = sizeBeta.apply(lambda x:pd.cut(x,bins=3,labels=False)+1).reset_index()
-    quantileStocks = quantileGroup.groupby(['size','beta']).apply(lambda x:x.index.tolist())
-    market_neutralize_stocks = quantileStocks.apply(
-        lambda x: pd.Series(all_a_stocks).loc[x].values.tolist()).values.tolist()
 
     closePrice = rqdatac.get_price(all_a_stocks, rqdatac.get_previous_trading_date(previous_trading_date),
                                    previous_trading_date, fields="close")
     priceChange = closePrice.pct_change().iloc[-1]
 
-    def _calc_single_explict_returns(factor):
+    index_mapping = {"csi_300":'000300.XSHG',"csi_500":"000905.XSHG","csi_800":"000906.XSHG"}
+    all_stocks = {index:rqdatac.index_components(index_mapping.get(index)) for index in index_mapping}
+    all_stocks['whole_market'] = filtered_stocks
 
-        _factor_exposure = factor_exposures[factor]
+    def _calc_explictRetrns_with_stocksList(stocksList):
+        # 根据股票池计算收益率
+        _sizeBeta = factor_exposures[['size','beta']].loc[stocksList]
+
+        _quantileGroup = _sizeBeta.apply(lambda x:pd.cut(x,bins=3,labels=False)+1).reset_index()
+        _quantileStocks = _quantileGroup.groupby(['size','beta']).apply(lambda x:x.index.tolist())
+        market_neutralize_stocks = _quantileStocks.apply(
+            lambda x: pd.Series(stocksList).loc[x].values.tolist()).values.tolist()
+        return factor_exposures.loc[stocksList].apply(lambda x,y=market_neutralize_stocks:_calc_single_explict_returns(x,y))
+
+    def _calc_single_explict_returns(_factor_exposure,market_neutralize_stocks):
+        # 计算单一因子收益率
         def _deuce(series):
             median = series.median()
             return [series[series<=median].index.tolist(),series[series>median].index.tolist()]
@@ -122,40 +129,7 @@ def get_explict_factor_returns(date):
 
         return priceChange[long_stockList].mean() - priceChange[short_stocksList].mean()
 
-    return factor_exposures.apply(lambda x:_calc_single_explict_returns(x.name))
+    results = {key: _calc_explictRetrns_with_stocksList(all_stocks.get(key)) for key in all_stocks}
+    return pd.DataFrame(results)[['whole_market','csi_300','csi_500','csi_800']]
 
-
-def calc_index_explict_factor_returns(indexCode,date):
-
-    previous_trading_date = rqdatac.get_previous_trading_date(date)
-
-    indexComponents = rqdatac.index_components(indexCode,date=previous_trading_date)
-    # print(indexComponents,previous_trading_date)
-    factor_exposures = rqdatac.get_style_factor_exposure(indexComponents, previous_trading_date, previous_trading_date, "all").sort_index()
-    factor_exposures.index=factor_exposures.index.droplevel(1)
-    sizeBeta = factor_exposures[['size','beta']]
-
-    quantileGroup = sizeBeta.apply(lambda x:pd.cut(x,bins=3,labels=False)+1).reset_index()
-    quantileStocks = quantileGroup.groupby(['size','beta']).apply(lambda x:x.index.tolist())
-    market_neutralize_stocks = quantileStocks.apply(
-        lambda x: pd.Series(indexComponents).loc[x].values.tolist()).values.tolist()
-
-    closePrice = rqdatac.get_price(indexComponents, rqdatac.get_previous_trading_date(previous_trading_date),
-                                   previous_trading_date, fields="close")
-    priceChange = closePrice.pct_change().iloc[-1]
-
-    def _calc_single_explict_returns(factor):
-
-        _factor_exposure = factor_exposures[factor]
-        def _deuce(series):
-            median = series.median()
-            return [series[series<=median].index.tolist(),series[series>median].index.tolist()]
-
-        deuceResults = np.array([_deuce(_factor_exposure[neutralized_stks]) for neutralized_stks in market_neutralize_stocks]).flatten()
-
-        short_stocksList = list(reduce(lambda x,y:set(x)|set(y),np.array([s for i,s in enumerate(deuceResults) if i%2==0])))
-        long_stockList = list(reduce(lambda x,y:set(x)|set(y),np.array([s for i,s in enumerate(deuceResults) if i%2==1])))
-
-        return priceChange[long_stockList].mean() - priceChange[short_stocksList].mean()
-
-    return factor_exposures.apply(lambda x:_calc_single_explict_returns(x.name))
+get_explict_factor_returns("2017-06-01")
