@@ -10,7 +10,7 @@ from functools import reduce
 rqdatac.init('rice', 'rice', ('192.168.10.64', 16009))
 
 
-def subnew_stocks_filter(stocks,date,subnewThres=5):
+def subnew_stocks_filter(stocks,date,subnewThres=360):
     """
     # 获得某日上市小于N天的次新股
     :param stocks: list 股票列表
