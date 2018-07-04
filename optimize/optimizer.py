@@ -90,47 +90,31 @@ def indicator_optimization(indicator_series, date, cov_estimator="shrinkage",
     suspended_stks = get_suspended_stocks(union_stks, start_date, date, window)
     union_stks = sorted(set(union_stks) - set(subnew_stks) - set(suspended_stks))
 
-    # from datetime import datetime
-    # s_time = datetime.now()
     daily_returns = get_price(union_stks, start_date, date, fields="close").pct_change().dropna(how='all').iloc[-window:]
-    # print(s_time,datetime.now())
     # covariance matrix for assets returns
     lw = LedoitWolf()
     covMat = lw.fit(daily_returns).covariance_ if cov_estimator == "shrinkage" else daily_returns.cov()
     covMat_option = lw.fit(daily_returns).covariance_ if cov_estimator_benchmarkOptions=="shrinkage" else daily_returns.cov()
 
-    print(np.linalg.cond(covMat))
-    # 行业偏离约束、行业自定义约束
-
     neutralized_industry_constraints = industry_neutralize_constraint(union_stks, date,deviation=industryDeviation, industryNeutral=industryNeutral, benchmark=benchmark)
     customized_industry_constraints = industry_customized_constraint(union_stks, industryConstraints, date)
 
-    # 风格约束
     neutralized_style_constraints = style_neutralize_constraint(union_stks,date,styleDeviation,styleNeutral,benchmark)
     customized_style_constraints = style_customized_constraint(union_stks,styleConstraints,date)
-    # print("="*30)
-    # print(neutralized_industry_constraints,len(neutralized_industry_constraints))
-    # print(customized_industry_constraints,len(customized_industry_constraints))
-    # print(neutralized_style_constraints,len(neutralized_style_constraints))
-    # print(customized_style_constraints,len(customized_style_constraints))
-    # print("*"*30)
 
-    # 个股上下界
-    # 自定义个股上下界,对于key中有*的个股权重约束,其所有股票的头寸约束同一
     if "*" in bounds.keys():
         bounds = tuple([bounds.get("*")]*len(weighted_stocks))
-    # 对于只在成分股出现的股票，其权重=0
     benchmark_only_stks = set(union_stks) - set(weighted_stocks)
     bnds1 = {s: (0, 0) for s in benchmark_only_stks}
     bounds.update(bnds1)
     bnds = tuple([bounds.get(s) if s in bounds else (0, 1) for s in union_stks])
 
     constraints = [{"type": "eq", "fun": lambda x: sum(x) - 1}]
-    # 投资组合波动率约束
+
+    # risk constraints
 
     if riskThreshold is not None:
         constraints.append({"type":"ineq","fun":lambda x: -portfolioRisk(x,covMat)+riskThreshold})
-    # 跟踪误差约束
     if trackingErrorThreshold is not None:
         constraints.append({"type":"ineq","fun":lambda x: -trackingError(x,benchmark,union_stks,date,covMat_option) + trackingErrorThreshold})
 
@@ -139,9 +123,6 @@ def indicator_optimization(indicator_series, date, cov_estimator="shrinkage",
     constraints.extend(neutralized_style_constraints)
     constraints.extend(customized_style_constraints)
     constraints = tuple(constraints)
-    # print(constraints)
-    # print(len(constraints))
-    #     目标函数 最大化
     def objectiveFunction(x):
         # factor exposure or somethings of the portfolio
         values = x.dot(indicator_series.loc[union_stks].replace(np.nan,0).values)
@@ -158,11 +139,5 @@ def indicator_optimization(indicator_series, date, cov_estimator="shrinkage",
         # 获得未分配行业的权重与成分股权重
         undistributedWeight,supplementedStocks = benchmark_industry_matching(union_stks, benchmark, date)
         optimized_weight = pd.concat([optimized_weight*(1-undistributedWeight),supplementedStocks])
-    # print(optimized_weight)
-    # print(len(optimized_weight))
-    # print(len(covMat))
-    # print(portfolioRisk(optimized_weight.dropna(), covMat))
-    # print(trackingError(optimized_weight.dropna(),benchmark,union_stks,date,covMat_option))
     # resultsWeights = pd.concat([shenwan_instrument_industry(optimized_weight.index.tolist(),date)['index_name'],optimized_weight],axis=1).groupby("index_name").sum()
-    # print(resultsWeights)
     return optimized_weight,subnew_stks, suspended_stks
