@@ -43,7 +43,7 @@ def indicator_optimization(indicator_series, date, cov_estimator="shrinkage",
                 - cov_estimator:跟踪误差的协方差矩阵约束
                         可选参数
                         -"shrinkage" 默认值; 对收益的协方差矩阵进行收缩矩阵
-                        -"empirical" 对收益进行普通的协方差计算
+                        -"empirical" 对收益进行经验协方差矩阵计算
                 - trackingErrorThreshold: float 可容忍的最大跟踪误差
                 - industryNeutral: list 设定投资组合相对基准行业存在偏离的行业
                 - industryDeviation tuple 投资组合的行业权重相对基准行业权重容许偏离度的上下界
