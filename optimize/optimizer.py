@@ -12,7 +12,7 @@ from .optimizer_toolkit import *
 
 def indicator_optimization(indicator_series, date, cov_estimator="shrinkage",
                            riskThreshold=None,window=126,bounds = {},
-                           industryConstraints={},styleConstraints=None,benchmarkOptions={}):
+                           industryConstraints={},styleConstraints={},benchmarkOptions={}):
     """
     进行指标序列最大化
     当riskThreshold(trackingErrorThreshold)指定值时进行风险约束
@@ -104,7 +104,8 @@ def indicator_optimization(indicator_series, date, cov_estimator="shrinkage",
 
     bounds={} if bounds is None else bounds
     if "*" in bounds.keys():
-        bounds = tuple([bounds.get("*")]*len(weighted_stocks))
+        bounds = {s: bounds.get("*") for s in order_book_ids}
+        # bounds = tuple([bounds.get("*")]*len(weighted_stocks))
     benchmark_only_stks = set(union_stks) - set(weighted_stocks)
     bnds1 = {s: (0, 0) for s in benchmark_only_stks}
     bounds.update(bnds1)
@@ -141,10 +142,10 @@ def indicator_optimization(indicator_series, date, cov_estimator="shrinkage",
         undistributedWeight,supplementedStocks = benchmark_industry_matching(union_stks, benchmark, date)
         optimized_weight = pd.concat([optimized_weight*(1-undistributedWeight),supplementedStocks])
     # resultsWeights = pd.concat([shenwan_instrument_industry(optimized_weight.index.tolist(),date)['index_name'],optimized_weight],axis=1).groupby("index_name").sum()
-    return optimized_weight,subnew_stks, suspended_stks
+    return optimized_weight,set(subnew_stks)&set(original_stks), set(suspended_stks)&set(original_stks)
 
 # 最小化投资组合风险
-def volatility_minimization(order_book_ids,date,cov_estimator="shrinkage",window=126,bounds={},industryConstraints={},styleConstraints=None,benchmarkOptions=None):
+def volatility_minimization(order_book_ids,date,cov_estimator="shrinkage",window=126,bounds={},industryConstraints={},styleConstraints={},benchmarkOptions=None):
     """
     投资组合波动率最小化
     :param order_book_ids:股票列表
@@ -221,7 +222,8 @@ def volatility_minimization(order_book_ids,date,cov_estimator="shrinkage",window
 
 
     if "*" in bounds.keys():
-        bounds = tuple([bounds.get("*")] * len(order_book_ids))
+        # bounds = tuple([bounds.get("*")] * len(order_book_ids))
+        bounds = {s:bounds.get("*") for s in order_book_ids}
     benchmark_only_stks = set(union_stks) - set(order_book_ids)
     bnds1 = {s: (0, 0) for s in benchmark_only_stks}
     bounds.update(bnds1)
@@ -256,9 +258,9 @@ def volatility_minimization(order_book_ids,date,cov_estimator="shrinkage",window
         undistributedWeight, supplementedStocks = benchmark_industry_matching(union_stks, benchmark, date)
         optimized_weight = pd.concat([optimized_weight * (1 - undistributedWeight), supplementedStocks])
     # resultsWeights = pd.concat([shenwan_instrument_industry(optimized_weight.index.tolist(),date)['index_name'],optimized_weight],axis=1).groupby("index_name").sum()
-    return optimized_weight, subnew_stks, suspended_stks
+    return optimized_weight,set(subnew_stks)&set(order_book_ids), set(suspended_stks)&set(order_book_ids)
 
-def trackingError_minization(order_book_ids,date,cov_estimator_trackingError="shrinkage",benchmark="000300.XSHG",riskThreshold=None,cov_estimator="shrinkage",window=126,bounds={},industryConstraints={},styleConstraints=None,benchmarkOptions=None):
+def trackingError_minization(order_book_ids,date,cov_estimator_trackingError="shrinkage",benchmark="000300.XSHG",riskThreshold=None,cov_estimator="shrinkage",window=126,bounds={},industryConstraints={},styleConstraints={},benchmarkOptions=None):
 
     """
     投资组合跟踪误差最小化
@@ -331,7 +333,8 @@ def trackingError_minization(order_book_ids,date,cov_estimator_trackingError="sh
 
 
     if "*" in bounds.keys():
-        bounds = tuple([bounds.get("*")] * len(order_book_ids))
+        # bounds = tuple([bounds.get("*")] * len(order_book_ids))
+        bounds = {s: bounds.get("*") for s in order_book_ids}
     benchmark_only_stks = set(union_stks) - set(order_book_ids)
     bnds1 = {s: (0, 0) for s in benchmark_only_stks}
     bounds.update(bnds1)
@@ -365,4 +368,4 @@ def trackingError_minization(order_book_ids,date,cov_estimator_trackingError="sh
         undistributedWeight, supplementedStocks = benchmark_industry_matching(union_stks, benchmark, date)
         optimized_weight = pd.concat([optimized_weight * (1 - undistributedWeight), supplementedStocks])
     # resultsWeights = pd.concat([shenwan_instrument_industry(optimized_weight.index.tolist(),date)['index_name'],optimized_weight],axis=1).groupby("index_name").sum()
-    return optimized_weight, subnew_stks, suspended_stks
+    return optimized_weight,set(subnew_stks)&set(order_book_ids), set(suspended_stks)&set(order_book_ids)
