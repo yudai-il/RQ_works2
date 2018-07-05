@@ -104,7 +104,7 @@ def indicator_optimization(indicator_series, date, cov_estimator="shrinkage",
 
     bounds={} if bounds is None else bounds
     if "*" in bounds.keys():
-        bounds = {s: bounds.get("*") for s in order_book_ids}
+        bounds = {s: bounds.get("*") for s in weighted_stocks}
         # bounds = tuple([bounds.get("*")]*len(weighted_stocks))
     benchmark_only_stks = set(union_stks) - set(weighted_stocks)
     bnds1 = {s: (0, 0) for s in benchmark_only_stks}
@@ -132,7 +132,8 @@ def indicator_optimization(indicator_series, date, cov_estimator="shrinkage",
         return values
 
     # initial weights for optimization
-    x0 = np.ones(len(union_stks)) / len(union_stks)
+    # x0 = np.ones(len(union_stks)) / len(union_stks)
+    x0 = (pd.Series(1, index=weighted_stocks) / len(weighted_stocks)).reindex(union_stks).replace(np.nan, 0).values
     options = {'disp': True}
     res = minimize(objectiveFunction, x0, bounds=bnds, constraints=constraints, method='SLSQP', options=options)
 
@@ -248,7 +249,7 @@ def volatility_minimization(order_book_ids,date,cov_estimator="shrinkage",window
         return values
 
     # initial weights for optimization
-    x0 = np.ones(len(union_stks)) / len(union_stks)
+    x0 = (pd.Series(1,index=order_book_ids)/len(order_book_ids)).reindex(union_stks).replace(np.nan,0).values
     options = {'disp': True}
     res = minimize(objectiveFunction, x0, bounds=bnds, constraints=constraints, method='SLSQP', options=options)
 
@@ -358,7 +359,8 @@ def trackingError_minization(order_book_ids,date,cov_estimator_trackingError="sh
         return values
 
     # initial weights for optimization
-    x0 = np.ones(len(union_stks)) / len(union_stks)
+    # x0 = np.ones(len(union_stks)) / len(union_stks)
+    x0 = (pd.Series(1, index=order_book_ids) / len(order_book_ids)).reindex(union_stks).replace(np.nan, 0).values
     options = {'disp': True}
     res = minimize(objectiveFunction, x0, bounds=bnds, constraints=constraints, method='SLSQP', options=options)
 
