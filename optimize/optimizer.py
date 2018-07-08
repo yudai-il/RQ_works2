@@ -54,6 +54,7 @@ def constraintsGeneration(order_book_ids,union_stks,benchmark,date,bounds,indust
 
 def covarinaceEstimation(daily_returns,**kwargs):
 
+    # FIXME to be improved
     cov_estimator = kwargs.get("cov_estimator")
     cov_estimator_benchmarkOptions = kwargs.get("cov_estimator_benchmarkOptions")
 
