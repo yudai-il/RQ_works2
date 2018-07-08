@@ -1,8 +1,9 @@
 import pandas as pd
 import numpy as np
-import rqdatac
-rqdatac.init('rice','rice',('192.168.10.64',16008))
+# import rqdatac
+# rqdatac.init('rice','rice',('192.168.10.64',16008))
 from rqdatac import *
+import warnings
 
 def get_subnew_stocks(stocks,date,N):
     """
@@ -45,6 +46,22 @@ def winsorized_std(rawData, n=3):
     return rawData.clip(mean - std * n, mean + std * n)
 
 
+def stocksPoolHandler(**kwargs):
+    benchmark = kwargs.get("benchamrk")
+    date = kwargs.get("date")
+    order_book_ids = kwargs.get("order_book_ids")
+    window = kwargs.get("window")
+
+    benchmark_components = index_components(benchmark, date=date) if benchmark is None else []
+    union_stks = sorted(set(benchmark_components).union(set(order_book_ids)))
+
+    subnew_stks = get_subnew_stocks(union_stks, date, window)
+    suspended_stks = get_suspended_stocks(union_stks, date, window)
+    union_stks = sorted(set(union_stks) - set(subnew_stks) - set(suspended_stks))
+
+    order_book_ids = sorted(set(union_stks)&set(order_book_ids))
+    return order_book_ids,union_stks,suspended_stks,subnew_stks
+
 def trackingError(x,benchmark,union_stks,date,covMat):
     """
     跟踪误差约束
@@ -62,7 +79,7 @@ def trackingError(x,benchmark,union_stks,date,covMat):
     result = np.sqrt(np.dot(np.dot(np.matrix(X), covMat * 252), np.matrix(X).T).A1[0])
     return result
 
-def portfolioRisk(x,covMat):
+def volatility(x,covMat):
     """
     计算投资组合波动率
     :param x:
@@ -158,6 +175,7 @@ def validateConstraints(order_book_ids,bounds,date,industryConstraints,industryN
             raise Exception("自定义约束 和 偏离约束 不能存在重叠部分")
 
     def _boundsCheck(bounds):
+        bounds = {} if bounds is None else bounds
         bounds = bounds.values()
         lowerCumsum = np.sum(s[0] for s in bounds)
         upperCumsum = np.sum(s[1] for s in bounds)
@@ -174,7 +192,7 @@ def validateConstraints(order_book_ids,bounds,date,industryConstraints,industryN
 
     missing_industry = set(industryConstraints)- set(missing_industryLabel_handler(order_book_ids,date))
     if missing_industry:
-        print("WARNING order_book_ids 中没有股票属于{}行业, 已忽略其行业约束".format(missing_industry))
+        warnings.warn("order_book_ids 中没有股票属于{}行业, 已忽略其行业约束".format(missing_industry))
 
 def benchmark_industry_matching(order_book_ids, benchmark, date):
     """
@@ -290,13 +308,6 @@ def style_neutralize_constraint(order_book_ids,date,deviation,factors,benchmark)
     return constraints
 
 
-    # order_book_ids, date, industryNeutral = "*", benchmark = '000300.XSHG', deviation = (0.03, 0.05)
-
-# order_book_ids = index_components("000300.XSHG","2016-03-20")
-# order_book_ids.extend(['002789.XSHE',"300505.XSHE","601020.XSHG"])
-# date="2016-03-20"
-# shenwan_instrument_industry(order_book_ids,date)['index_name'].reindex(order_book_ids)
-
 def missing_industryLabel_handler(order_book_ids,date):
     industry = shenwan_instrument_industry(order_book_ids,date=date)['index_name'].reindex(order_book_ids)
     missing_stocks = industry[industry.isnull()].index.tolist()
@@ -314,10 +325,3 @@ def missing_industryLabel_handler(order_book_ids,date):
                 break
         industry.loc[supplemented_data.keys()] = pd.Series(supplemented_data)
     return industry
-
-# missing_industryLabel_handler(stocks,"2018-07-01")
-
-
-
-
-
