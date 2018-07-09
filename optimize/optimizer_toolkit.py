@@ -3,7 +3,10 @@ import numpy as np
 # import rqdatac
 # rqdatac.init('rice','rice',('192.168.10.64',16008))
 from rqdatac import *
+import rqdatac
+rqdatac.init('rice','rice',('192.168.10.64',16030))
 import warnings
+from scipy.stats import norm
 
 def get_subnew_stocks(stocks,date,N):
     """
@@ -325,3 +328,26 @@ def missing_industryLabel_handler(order_book_ids,date):
                 break
         industry.loc[supplemented_data.keys()] = pd.Series(supplemented_data)
     return industry
+
+# 2018-07-09 calculating var and cvar
+
+def VaR(x,union_stocks,date,confidence_level=5):
+
+    covariance = rqdatac.barra.get_factor_covariance(date=date)
+    specific = rqdatac.barra.get_specific_return(union_stocks,start_date=date,end_date=date).iloc[0]
+    factor_exposure = rqdatac.barra.get_factor_exposure(union_stocks,start_date=date,end_date=date).xs(date, level=1)
+
+    vol = (x.T.dot(((factor_exposure.dot(covariance)).dot(factor_exposure.T)+specific))).dot(x)
+    return norm.interval(1-confidence_level/100,0,vol)[0],vol
+
+def CVaR(x,union_stocks,date):
+    var,vol = VaR(x,union_stocks,date)
+    return np.sum([0.001* norm(0,vol).pdf(i) for i in np.arange(-4*vol,var,0.001)])
+
+
+
+
+
+
+
+
