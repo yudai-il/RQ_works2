@@ -62,8 +62,11 @@ def stocksPoolHandler(**kwargs):
     suspended_stks = get_suspended_stocks(union_stks, date, window)
     union_stks = sorted(set(union_stks) - set(subnew_stks) - set(suspended_stks))
 
+    subnew_returns = set(subnew_stks)&set(order_book_ids)
+    suspended_returns = set(suspended_stks)&set(order_book_ids)
+
     order_book_ids = sorted(set(union_stks)&set(order_book_ids))
-    return order_book_ids,union_stks,suspended_stks,subnew_stks
+    return order_book_ids,union_stks,suspended_returns,subnew_returns
 
 def trackingError(x,benchmark,union_stks,date,covMat):
     """
@@ -344,6 +347,25 @@ def CVaR(x,union_stocks,date):
     var,vol = VaR(x,union_stocks,date)
     return np.sum([0.001* norm(0,vol).pdf(i) for i in np.arange(-4*vol,var,0.001)])
 
+
+def meanVarianceAnalysis(order_book_ids,covMat,dailyReturns):
+
+    covMat = covMat.loc[order_book_ids,order_book_ids]
+    dailyReturns = dailyReturns[order_book_ids]
+
+    def _simulate():
+        x = np.random.random(len(order_book_ids))
+        x/=np.sum(x)
+        vol = volatility(x,covMat)
+        rets = x.dot(dailyReturns.mean())*252
+        return [vol,rets]
+
+    import matplotlib.pyplot as plt
+    plt.clf()
+    _,ax = plt.subplots()
+    results = pd.DataFrame([_simulate() for i in range(3000)])
+    plt.scatter(results[0],results[1],c=results[1]/results[0])
+    return results.rename(columns={0:"年化波动率",1:"年化收益率"})
 
 
 
