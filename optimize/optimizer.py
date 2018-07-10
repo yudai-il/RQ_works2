@@ -6,17 +6,20 @@ from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
 # from .optimizer_toolkit import *
 # import matplotlib.pyplot as plt
-from multifactorAnalysis.factorOptimization2.optimizer_toolkit import *
+from factor_analysis_multifactor.factorOptimizer.optimizer_toolkit import *
 
 
 from enum import Enum
 # 枚举类型
 class OptimizeMethod(Enum):
+    # 均值方差分析
+    MM_ANALYSIS = ""
     VOLATILITY = volatility
     TRACKING_ERROR = trackingError
-    # TODO tofinished
+    # TODO tofinished risk budgeting
     CVAR = ''
     ACTIVE_CAVR = ""
+    #indicator maximization
 
 
 def constraintsGeneration(order_book_ids,union_stks,benchmark,date,bounds,industryConstraints,industryNeutral,industryDeviation,styleConstraints,styleNeutral,styleDeviation):
@@ -74,31 +77,29 @@ def portfolio_optimization(order_book_ids,date,method=OptimizeMethod.VOLATILITY,
     :param order_book_ids:股票列表
     :param date: 优化日期 如"2018-06-20"
     :param method 进行优化的目标函数
-
-    :param cov_estimator: str 波动率约束
+    :param cov_estimator: str 目标函数优化时的协方差矩阵
             可选参数：
                 -"shrinkage" 默认值; 对收益的协方差矩阵进行收缩矩阵
                 -"empirical" 计算个股收益的经验协方差矩阵
                 -"multifactor" 因子协方差矩阵
     :param window: int 计算收益率协方差矩阵时的回溯交易日数目 默认为126
-
     :param bounds: dict 个股头寸的上下限
                         1、{'*': (0, 0.03)},则所有个股仓位都在0-3%之间;
                         2、{'601099.XSHG':(0,0.3),'601216.XSHG':(0,0.4)},则601099的仓位在0-30%，601216的仓位在0-40%之间
-
     :param industryConstraints:dict 行业的权重上下限
                         1、{'*': (0, 0.03)},则所有行业权重都在0-3%之间;
                         2、{'银行':(0,0.3),'房地产':(0,0.4)},则银行行业的权重在0-30%，房地产行业的权重在0-40%之间
     :param styleConstraints:dict 风格约束的上下界
                         1、{"*":(1,3)},则所有的风格暴露度在1-3之间
-
     :param benchmarkOptions dict,优化器的可选参数，该字典接受如下参数选项
                 - benchmark: string 组合跟踪的基准指数, 默认为"000300.XSHG"
-                - cov_estimator:跟踪误差的协方差矩阵约束
+                - cov_estimator:约束时所使用的协方差矩阵
                         可选参数
                         -"shrinkage" 默认值; 对收益的协方差矩阵进行收缩矩阵
                         -"empirical" 对收益进行经验协方差矩阵计算
                 - trackingErrorThreshold: float 可容忍的最大跟踪误差
+                # FIXME
+                - turnover: float 换手率限制
                 - industryNeutral: list 设定投资组合相对基准行业存在偏离的行业
                 - industryDeviation tuple 投资组合的行业权重相对基准行业权重容许偏离度的上下界
                 - styleNeutral: list 设定投资组合相对基准行业存在偏离的barra风格因子
@@ -114,6 +115,9 @@ def portfolio_optimization(order_book_ids,date,method=OptimizeMethod.VOLATILITY,
         'industryDeviation')
     styleNeutral, styleDeviation = benchmarkOptions.get("styleNeutral"), benchmarkOptions.get("styleDeviation")
     industryMatching = benchmarkOptions.get("industryMatching")
+
+    turnover = benchmarkOptions.get("turnover")
+
     bounds = {} if bounds is None else bounds
 
     order_book_ids, union_stks, suspended_stks, subnew_stks = stocksPoolHandler(date=date,order_book_ids=order_book_ids,window=window,benchamrk=benchmark)
@@ -128,16 +132,22 @@ def portfolio_optimization(order_book_ids,date,method=OptimizeMethod.VOLATILITY,
     if trackingErrorThreshold is not None:
         constraints.append({"type": "ineq", "fun": lambda x: -trackingError(x, benchmark, union_stks, date,
                                                                             covMat_option) + trackingErrorThreshold})
+    if turnover is not None:
+        # FIXME
+        constraints.append({"type":"ineq",})
+
     x0 = (pd.Series(1,index=order_book_ids)/len(order_book_ids)).reindex(union_stks).replace(np.nan,0).values
     options = {'disp': True}
 
     objectiveFunction = method
+    if str(method) == 'OptimizeMethod.MM_ANALYSIS':
+        return meanVarianceAnalysis(order_book_ids,covMat,daily_returns)
+    else:
+        res = minimize(objectiveFunction, x0, bounds=bnds, constraints=constraints, method='SLSQP', options=options)
+        optimized_weight = pd.Series(res['x'], index=union_stks).reindex(order_book_ids)
+        if industryMatching:
+            # 获得未分配行业的权重与成分股权重
+            undistributedWeight, supplementedStocks = benchmark_industry_matching(order_book_ids, benchmark, date)
+            optimized_weight = pd.concat([optimized_weight * (1 - undistributedWeight), supplementedStocks])
 
-    res = minimize(objectiveFunction, x0, bounds=bnds, constraints=constraints, method='SLSQP', options=options)
-    optimized_weight = pd.Series(res['x'], index=union_stks).reindex(order_book_ids)
-    if industryMatching:
-        # 获得未分配行业的权重与成分股权重
-        undistributedWeight, supplementedStocks = benchmark_industry_matching(order_book_ids, benchmark, date)
-        optimized_weight = pd.concat([optimized_weight * (1 - undistributedWeight), supplementedStocks])
-
-    return optimized_weight,res.status,set(subnew_stks)&set(order_book_ids), set(suspended_stks)&set(order_book_ids)
+        return optimized_weight,res.status,set(subnew_stks)&set(order_book_ids), set(suspended_stks)&set(order_book_ids)
