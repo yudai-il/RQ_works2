@@ -367,6 +367,15 @@ def meanVarianceAnalysis(order_book_ids,covMat,dailyReturns):
     plt.scatter(results[0],results[1],c=results[1]/results[0])
     return results.rename(columns={0:"年化波动率",1:"年化收益率"})
 
+def risk_budget(x,covMat):
+    return volatility(x,covMat)
+
+
+
+
+
+
+
 
 
 
