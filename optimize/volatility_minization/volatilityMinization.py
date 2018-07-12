@@ -123,7 +123,7 @@ def volatility_minimization(order_book_ids,date,cov_estimator="shrinkage",window
 
     # initial weights for optimization
     x0 = (pd.Series(1,index=order_book_ids)/len(order_book_ids)).reindex(union_stks).replace(np.nan,0).values
-    options = {'disp': Fals()}
+    options = {'disp': False}
     res = minimize(objectiveFunction, x0, bounds=bnds, constraints=constraints, method='SLSQP', options=options)
 
     optimized_weight = pd.Series(res['x'], index=union_stks).reindex(order_book_ids)
