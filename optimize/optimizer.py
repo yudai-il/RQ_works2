@@ -14,6 +14,7 @@ from enum import Enum
 class OptimizeMethod(Enum):
     # 均值方差分析
     MM_ANALYSIS = ""
+    RISK_BUDGET = ""
     VOLATILITY = volatility
     TRACKING_ERROR = trackingError
     # TODO tofinished risk budgeting
@@ -67,9 +68,6 @@ def covarinaceEstimation(daily_returns,**kwargs):
         daily_returns).covariance_ if cov_estimator_benchmarkOptions == "shrinkage" else daily_returns.cov()
     return covMat,covMat_option
 
-# def objectiveFunction():
-#     pass
-
 
 def portfolio_optimization(order_book_ids,date,method=OptimizeMethod.VOLATILITY,cov_estimator="shrinkage",window=126,bounds=None,industryConstraints=None,styleConstraints=None,benchmarkOptions=None):
     """
@@ -116,6 +114,8 @@ def portfolio_optimization(order_book_ids,date,method=OptimizeMethod.VOLATILITY,
     styleNeutral, styleDeviation = benchmarkOptions.get("styleNeutral"), benchmarkOptions.get("styleDeviation")
     industryMatching = benchmarkOptions.get("industryMatching")
 
+    volatility_budget = benchmarkOptions.get("volatility_budget")
+
     turnover = benchmarkOptions.get("turnover")
 
     bounds = {} if bounds is None else bounds
@@ -136,6 +136,9 @@ def portfolio_optimization(order_book_ids,date,method=OptimizeMethod.VOLATILITY,
         # FIXME
         constraints.append({"type":"ineq",})
 
+    if str(method) == "OptimizeMethod.RISK_BUDGET":
+        constraints.append({"type":"ineq","fun":lambda x:volatility_budget.dot(np.log(x))-0.1})
+
     x0 = (pd.Series(1,index=order_book_ids)/len(order_book_ids)).reindex(union_stks).replace(np.nan,0).values
     options = {'disp': True}
 
@@ -145,6 +148,8 @@ def portfolio_optimization(order_book_ids,date,method=OptimizeMethod.VOLATILITY,
     else:
         res = minimize(objectiveFunction, x0, bounds=bnds, constraints=constraints, method='SLSQP', options=options)
         optimized_weight = pd.Series(res['x'], index=union_stks).reindex(order_book_ids)
+        optimized_weight/=optimized_weight.sum()
+
         if industryMatching:
             # 获得未分配行业的权重与成分股权重
             undistributedWeight, supplementedStocks = benchmark_industry_matching(order_book_ids, benchmark, date)
