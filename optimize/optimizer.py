@@ -1,51 +1,47 @@
-import pandas as pd
-import numpy as np
-import scipy.stats as st
-#from rqdatac import *
 from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
-# from .optimizer_toolkit import *
-# import matplotlib.pyplot as plt
-from factor_analysis_multifactor.factorOptimizer.optimizer_toolkit import *
-
-
+from .optimizer_toolkit import *
 from enum import Enum
-# 枚举类型
+
+
 class OptimizeMethod(Enum):
     # 均值方差分析
-    MM_ANALYSIS = ""
-    RISK_BUDGET = ""
+    MEAN_VARIANCE = meanVariance
+    # RISK_BUDGET = risk_budget
     VOLATILITY = volatility
     TRACKING_ERROR = trackingError
-    # TODO tofinished risk budgeting
-    CVAR = ''
-    ACTIVE_CAVR = ""
-    #indicator maximization
+    VAR = VaR
+    CVAR = CVaR
+    MAXIMUM_INDICATOR = maximizing_indicator
 
 
-def constraintsGeneration(order_book_ids,union_stks,benchmark,date,bounds,industryConstraints,industryNeutral,industryDeviation,styleConstraints,styleNeutral,styleDeviation):
+def objectiveFunction(x, function, **kwargs):
+    return function(x, **kwargs)
 
+
+def constraintsGeneration(order_book_ids, union_stocks, benchmark, date, bounds, industryConstraints, industryNeutral,
+                          industryDeviation, styleConstraints, styleNeutral, styleDeviation):
     if "*" in bounds.keys():
-        bounds = {s:bounds.get("*") for s in order_book_ids}
+        bounds = {s: bounds.get("*") for s in order_book_ids}
     elif len(bounds) == 0:
-        bounds = {s:(0,1) for s in order_book_ids}
+        bounds = {s: (0, 1) for s in order_book_ids}
 
-    not_weighted_stocks = set(union_stks) - set(order_book_ids)
+    not_weighted_stocks = set(union_stocks) - set(order_book_ids)
     bnds1 = {s: (0, 0) for s in not_weighted_stocks}
     bounds.update(bnds1)
-    bnds = tuple([bounds.get(s) if s in bounds else (0, None) for s in union_stks])
+    bnds = tuple([bounds.get(s) if s in bounds else (0, 1) for s in union_stocks])
 
     validateConstraints(order_book_ids, bounds, date, industryConstraints, industryNeutral, styleConstraints,
                         styleNeutral)
 
-    neutralized_industry_constraints = industry_neutralize_constraint(union_stks, date, deviation=industryDeviation,
+    neutralized_industry_constraints = industry_neutralize_constraint(union_stocks, date, deviation=industryDeviation,
                                                                       industryNeutral=industryNeutral,
                                                                       benchmark=benchmark)
-    customized_industry_constraints = industry_customized_constraint(union_stks, industryConstraints, date)
+    customized_industry_constraints = industry_customized_constraint(union_stocks, industryConstraints, date)
 
-    neutralized_style_constraints = style_neutralize_constraint(union_stks, date, styleDeviation, styleNeutral,
+    neutralized_style_constraints = style_neutralize_constraint(union_stocks, date, styleDeviation, styleNeutral,
                                                                 benchmark)
-    customized_style_constraints = style_customized_constraint(union_stks, styleConstraints, date)
+    customized_style_constraints = style_customized_constraint(union_stocks, styleConstraints, date)
 
     constraints = [{"type": "eq", "fun": lambda x: sum(x) - 1}]
 
@@ -54,24 +50,54 @@ def constraintsGeneration(order_book_ids,union_stks,benchmark,date,bounds,indust
     constraints.extend(neutralized_style_constraints)
     constraints.extend(customized_style_constraints)
 
-    return bnds,constraints
+    return bnds, constraints
 
-def covarinaceEstimation(daily_returns,**kwargs):
 
-    # FIXME to be improved
+def covarinaceEstimation(**kwargs):
     cov_estimator = kwargs.get("cov_estimator")
-    cov_estimator_benchmarkOptions = kwargs.get("cov_estimator_benchmarkOptions")
-
+    daily_returns = kwargs.get("daily_returns")
     lw = LedoitWolf()
     covMat = lw.fit(daily_returns).covariance_ if cov_estimator == "shrinkage" else daily_returns.cov()
-    covMat_option = lw.fit(
-        daily_returns).covariance_ if cov_estimator_benchmarkOptions == "shrinkage" else daily_returns.cov()
-    return covMat,covMat_option
+    return covMat
+
+def riskBudgetRawDataHandler(order_book_ids,riskBudgetOptions):
+
+    assetRank = riskBudgetOptions.get("assetRank")
+    groupedBudget = riskBudgetOptions.get("groupedBudget")
+    assetsType = riskBudgetOptions.get("assetsType")
+
+    # 未指定 评级 只应用于基金
+    if assetRank is None and groupedBudget is not None:
+        if assetsType == "Fund":
+            assetRank = pd.Series([s.fund_type for s in fund.instruments(order_book_ids)],index=order_book_ids)
+            groupedBudget = {key:groupedBudget.get(key,0) for key in set(assetRank)}
+            assetRank.replace(groupedBudget,inplace=True)
+            return assetRank.groupby(assetRank).transform(lambda x:x.name/len(x))
+        else:
+            raise Exception("对股票进行风险预算时需要指定评级")
+    #   同时指定了 评级 和 风险预算 对于股票和基金均可使用
+    elif assetRank is not None and groupedBudget is not None:
+        groupedBudget = {key:groupedBudget.get(key,0) for key in set(assetRank)}
+        assetRank.replace(groupedBudget, inplace=True)
+        return assetRank.groupby(assetRank).transform(lambda x: float(x.name) / len(x))
+    # 只指定了评级，则根据评级，进行归一化，只接受float类型且大于0的评级
+    elif groupedBudget is None and assetRank is not None:
+        try:
+            assetRank = assetRank.astype(np.float64)
+        except:
+            print("当未指定风险预算时，只接受float类型且大于0的评级")
+        assetRank/=assetRank.sum()
+        return assetRank
+    # 都未指定 则进行风险平价
+    else:
+        return pd.Series(1./len(order_book_ids),index=order_book_ids)
 
 
-def portfolio_optimization(order_book_ids,date,method=OptimizeMethod.VOLATILITY,cov_estimator="shrinkage",window=126,bounds=None,industryConstraints=None,styleConstraints=None,benchmarkOptions=None):
+
+def portfolio_optimize(order_book_ids, date,indicator_series, method=OptimizeMethod.VOLATILITY, cov_estimator="shrinkage",
+                           window=126, bounds=None, industryConstraints=None, styleConstraints=None,
+                           benchmarkOptions=None,riskBudegtOptions=None):
     """
-    投资组合波动率最小化
     :param order_book_ids:股票列表
     :param date: 优化日期 如"2018-06-20"
     :param method 进行优化的目标函数
@@ -96,63 +122,102 @@ def portfolio_optimization(order_book_ids,date,method=OptimizeMethod.VOLATILITY,
                         -"shrinkage" 默认值; 对收益的协方差矩阵进行收缩矩阵
                         -"empirical" 对收益进行经验协方差矩阵计算
                 - trackingErrorThreshold: float 可容忍的最大跟踪误差
-                # FIXME
-                - turnover: float 换手率限制
                 - industryNeutral: list 设定投资组合相对基准行业存在偏离的行业
                 - industryDeviation tuple 投资组合的行业权重相对基准行业权重容许偏离度的上下界
                 - styleNeutral: list 设定投资组合相对基准行业存在偏离的barra风格因子
                 - styleDeviation tuple 投资组合的风格因子权重相对基准风格容许偏离度的上下界
                 - industryMatching:boolean 是否根据基准成分股进行配齐
+    :param riskBudgetOptions: dict,优化器可选参数,该字典接受如下参数
+                - riskType: 风险计算类型 默认为波动率 #TODO 待补充
+                - assetRank: 资产评级
+                - groupedBudget: 风险预算
+
     :return: pandas.Series优化后的个股权重 ,新股列表list(optional),停牌股list(optional)
     """
     benchmarkOptions = {} if benchmarkOptions is None else benchmarkOptions
-    benchmark =  benchmarkOptions.get("benchmark","000300.XSHG")
+    benchmark = benchmarkOptions.get("benchmark", "000300.XSHG")
     cov_estimator_benchmarkOptions = benchmarkOptions.get('cov_estimator')
     trackingErrorThreshold = benchmarkOptions.get("trackingErrorThreshold")
-    industryNeutral, industryDeviation = benchmarkOptions.get('industryNeutral'), benchmarkOptions.get(
-        'industryDeviation')
+    industryNeutral, industryDeviation = benchmarkOptions.get('industryNeutral'), benchmarkOptions.get('industryDeviation')
     styleNeutral, styleDeviation = benchmarkOptions.get("styleNeutral"), benchmarkOptions.get("styleDeviation")
     industryMatching = benchmarkOptions.get("industryMatching")
 
-    volatility_budget = benchmarkOptions.get("volatility_budget")
+    riskBudgetOptions = {} if riskBudegtOptions is None else riskBudegtOptions
 
-    turnover = benchmarkOptions.get("turnover")
+
 
     bounds = {} if bounds is None else bounds
+    industryConstraints = {} if industryConstraints is None else industryConstraints
+    styleConstraints = {} if styleConstraints is None else styleConstraints
 
-    order_book_ids, union_stks, suspended_stks, subnew_stks = stocksPoolHandler(date=date,order_book_ids=order_book_ids,window=window,benchamrk=benchmark)
+    _benchmark = benchmark if method is OptimizeMethod.TRACKING_ERROR or isinstance(trackingErrorThreshold,float) else None
 
-    bnds,constraints = constraintsGeneration(order_book_ids=order_book_ids,union_stks=union_stks,benchmark=benchmark,date=date,bounds=bounds,industryConstraints=industryConstraints,industryNeutral=industryNeutral,industryDeviation=industryDeviation,styleConstraints=styleConstraints,styleNeutral=styleNeutral,styleDeviation=styleDeviation)
+    assetsType = assetsDistinguish(order_book_ids)
+
+    order_book_ids, union_stocks, suspended_stocks, subnew_stocks = stocksPoolHandler(date=date,
+                                                                                      order_book_ids=order_book_ids,
+                                                                                      window=window,
+                                                                                      benchmark=_benchmark,assetsType=assetsType)
+
+    bnds, constraints = constraintsGeneration(order_book_ids=order_book_ids, union_stocks=union_stocks,
+                                              benchmark=benchmark, date=date, bounds=bounds,
+                                              industryConstraints=industryConstraints, industryNeutral=industryNeutral,
+                                              industryDeviation=industryDeviation, styleConstraints=styleConstraints,
+                                              styleNeutral=styleNeutral, styleDeviation=styleDeviation)
 
     start_date = pd.Timestamp(date) - np.timedelta64(window * 2, "D")
-    daily_returns = get_price(union_stks, start_date, date, fields="close").pct_change().dropna(how='all').iloc[-window:]
+    if assetsType == 'CS':
+        daily_returns = get_price(union_stocks, start_date, date, fields="close").pct_change().dropna(how='all').iloc[-window:]
+    else:
+        assert assetsType == "Fund"
+        daily_returns = fund.get_nav(order_book_ids,start_date,date,fields="adjusted_net_value").pct_change().dropna(how="all").iloc[-window:]
 
-    covMat,covMat_option = covarinaceEstimation(daily_returns=daily_returns,cov_estimator = cov_estimator,cov_estimator_benchmarkOptions=cov_estimator_benchmarkOptions)
+    objective_covMat = covarinaceEstimation(daily_returns=daily_returns,cov_estimator=cov_estimator) if method is OptimizeMethod.TRACKING_ERROR else covarinaceEstimation(daily_returns=daily_returns[order_book_ids],cov_estimator=cov_estimator)
 
-    if trackingErrorThreshold is not None:
-        constraints.append({"type": "ineq", "fun": lambda x: -trackingError(x, benchmark, union_stks, date,
-                                                                            covMat_option) + trackingErrorThreshold})
-    if turnover is not None:
-        # FIXME
-        constraints.append({"type":"ineq",})
 
-    if str(method) == "OptimizeMethod.RISK_BUDGET":
-        constraints.append({"type":"ineq","fun":lambda x:volatility_budget.dot(np.log(x))-0.1})
 
-    x0 = (pd.Series(1,index=order_book_ids)/len(order_book_ids)).reindex(union_stks).replace(np.nan,0).values
+    x0 = (pd.Series(1, index=order_book_ids) / len(order_book_ids)).reindex(union_stocks).replace(np.nan, 0).values
     options = {'disp': True}
 
-    objectiveFunction = method
-    if str(method) == 'OptimizeMethod.MM_ANALYSIS':
-        return meanVarianceAnalysis(order_book_ids,covMat,daily_returns)
-    else:
-        res = minimize(objectiveFunction, x0, bounds=bnds, constraints=constraints, method='SLSQP', options=options)
-        optimized_weight = pd.Series(res['x'], index=union_stks).reindex(order_book_ids)
-        optimized_weight/=optimized_weight.sum()
 
-        if industryMatching:
-            # 获得未分配行业的权重与成分股权重
-            undistributedWeight, supplementedStocks = benchmark_industry_matching(order_book_ids, benchmark, date)
-            optimized_weight = pd.concat([optimized_weight * (1 - undistributedWeight), supplementedStocks])
+    if isinstance(trackingErrorThreshold,float):
+        constraints_covMat = covarinaceEstimation(daily_returns=daily_returns,
+                                                  cov_estimator=cov_estimator_benchmarkOptions)
+        trackingErrorOptions = {"covMat": constraints_covMat, "benchmark": benchmark, "union_stocks": union_stocks,"date":date}
+        constraints.append({"type": "ineq", "fun": lambda x: -trackingError(x,**trackingErrorOptions) + trackingErrorThreshold})
 
-        return optimized_weight,res.status,set(subnew_stks)&set(order_book_ids), set(suspended_stks)&set(order_book_ids)
+    if method is OptimizeMethod.VAR or method is OptimizeMethod.CVAR:
+        covariance = rqdatac.barra.get_factor_covariance(date=date)
+        specific = rqdatac.barra.get_specific_return(order_book_ids,start_date=date,end_date=date).iloc[0]
+        factor_exposure = rqdatac.barra.get_factor_exposure(order_book_ids,start_date=date,end_date=date).xs(date, level=1)
+        kwargs_var = {"covariance":covariance,"specific":specific,"factor_exposure":factor_exposure}
+
+    if method is OptimizeMethod.RISK_BUDGET:
+        riskBudgetOptions.update({"assetsType":assetsType})
+        riskBudgets = riskBudgetRawDataHandler(order_book_ids, riskBudgetOptions)
+        constraints = []
+        constraints.append({"type": "ineq", "fun": lambda x: riskBudgets.dot(np.log(x)) - 0.1})
+
+    kwargs = {"covMat": objective_covMat, "benchmark": benchmark, "union_stocks": union_stocks, "date": date,
+                  "indicator_series": indicator_series}
+    kwargs.update({"riskType":riskBudgetOptions.get("riskType")})
+    kwargs.update(kwargs_var)
+
+    def _objectiveFunction(x):
+        return objectiveFunction(x, method, **kwargs)
+
+    res = minimize(_objectiveFunction, x0, bounds=bnds, constraints=constraints, method='SLSQP', options=options)
+    optimized_weight = pd.Series(res['x'], index=union_stocks).reindex(order_book_ids)
+
+    if industryMatching:
+        # 获得未分配行业的权重与成分股权重
+        undistributedWeight, supplementedStocks = benchmark_industry_matching(order_book_ids, benchmark, date)
+        optimized_weight = pd.concat([optimized_weight * (1 - undistributedWeight), supplementedStocks])
+
+    return optimized_weight, res.status, subnew_stocks, suspended_stocks
+
+
+
+
+
+
