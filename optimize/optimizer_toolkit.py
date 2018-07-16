@@ -1,14 +1,13 @@
 import pandas as pd
 import numpy as np
-# import rqdatac
-# rqdatac.init('rice','rice',('192.168.10.64',16008))
-from rqdatac import *
 import rqdatac
 rqdatac.init('rice','rice',('192.168.10.64',16030))
+from rqdatac import *
+import rqdatac
 import warnings
 from scipy.stats import norm
 
-def get_subnew_stocks(stocks,date,N):
+def get_subnew_assets(order_book_ids,date,N,type="CS"):
     """
     # 获得某日上市小于N天的次新股
     :param stocks: list 股票列表
@@ -16,7 +15,11 @@ def get_subnew_stocks(stocks,date,N):
     :param N: int 次新股过滤的阈值
     :return: list 列表中的次新股
     """
-    return [s for s in stocks if len(get_trading_dates(instruments(s).listed_date,date))<=N]
+    if type == "CS":
+        return [s for s in order_book_ids if len(get_trading_dates(instruments(s).listed_date,date))<=N]
+    elif type == "Fund":
+        return [s for s in order_book_ids if len(get_trading_dates(fund.instruments(s).listed_date, date)) <= N]
+
 
 def get_st_stocks(stocks,date):
     """
@@ -29,13 +32,14 @@ def get_st_stocks(stocks,date):
     st_series = is_st_stock(stocks,start_date=previous_date,end_date=date).iloc[-1]
     return st_series[st_series].index.tolist()
 
-def get_suspended_stocks(stocks,start_date,end_date,N):
+def get_suspended_stocks(stocks,end_date,N):
     """
     获得起始日期内未停牌过的股票列表
     :param stocks: list 股票列表
     :param start_date: 交易日
     :return: list 列表中的停牌股
     """
+    start_date = pd.Timestamp(end_date) - np.timedelta64(N * 2, "D")
     return [s for s in stocks if True in is_suspended(s,start_date,end_date).values.flatten()[-N:]]
 
 def winsorized_std(rawData, n=3):
@@ -48,44 +52,67 @@ def winsorized_std(rawData, n=3):
     mean, std = rawData.mean(), rawData.std()
     return rawData.clip(mean - std * n, mean + std * n)
 
-
 def stocksPoolHandler(**kwargs):
-    benchmark = kwargs.get("benchamrk")
+    benchmark = kwargs.get("benchmark")
     date = kwargs.get("date")
     order_book_ids = kwargs.get("order_book_ids")
     window = kwargs.get("window")
+    assetsType = kwargs.get("assetsType")
 
-    benchmark_components = index_components(benchmark, date=date) if benchmark is None else []
-    union_stks = sorted(set(benchmark_components).union(set(order_book_ids)))
+    if assetsType == "CS":
 
-    subnew_stks = get_subnew_stocks(union_stks, date, window)
-    suspended_stks = get_suspended_stocks(union_stks, date, window)
-    union_stks = sorted(set(union_stks) - set(subnew_stks) - set(suspended_stks))
+        benchmark_components = index_components(benchmark, date=date) if benchmark is not None else []
+        union_stocks = sorted(set(benchmark_components).union(set(order_book_ids)))
 
-    subnew_returns = set(subnew_stks)&set(order_book_ids)
-    suspended_returns = set(suspended_stks)&set(order_book_ids)
+        subnew_stocks = get_subnew_assets(union_stocks, date, window)
+        suspended_stocks = get_suspended_stocks(union_stocks, date, window)
+        union_stocks = sorted(set(union_stocks) - set(subnew_stocks) - set(suspended_stocks))
 
-    order_book_ids = sorted(set(union_stks)&set(order_book_ids))
-    return order_book_ids,union_stks,suspended_returns,subnew_returns
+        subnew_stocks = set(subnew_stocks)&set(order_book_ids)
+        suspended_stocks = set(suspended_stocks)&set(order_book_ids)
 
-def trackingError(x,benchmark,union_stks,date,covMat):
+        order_book_ids = sorted(set(union_stocks)&set(order_book_ids))
+
+        return order_book_ids,union_stocks,suspended_stocks,subnew_stocks
+    else:
+        assert assetsType == "Fund"
+        subnew_funds = get_subnew_assets(order_book_ids, date, window,type="Fund")
+        order_book_ids = sorted(set(order_book_ids)-set(subnew_funds))
+        return order_book_ids,order_book_ids,[],subnew_funds
+
+def assetsDistinguish(order_book_ids):
+    stocksInstruments = instruments(order_book_ids)
+    fundsInstruments = fund.instruments(order_book_ids)
+
+    cons_all_funds = len(fundsInstruments) == len(order_book_ids)
+    cons_all_stocks = len(stocksInstruments) == len(order_book_ids)
+
+    if not (cons_all_funds or cons_all_stocks):
+        raise Exception("输入order_book_ids必须全为股票或者基金")
+    assetsType = "Fund" if cons_all_funds else "CS"
+    return assetsType
+
+
+def trackingError(x,**kwargs):
     """
     跟踪误差约束
     :param x: 权重
     :param benchmark: 基准
-    :param union_stks:股票并集
+    :param union_stocks:股票并集
     :param date: 优化日期
     :param covMat: 协方差矩阵
     :return: float
     """
+    benchmark, union_stocks, date, covMat = kwargs.get("benchmark"),kwargs.get("union_stocks"),kwargs.get("date"),kwargs.get("covMat")
     # vector of deviations
     _index_weights = index_weights(benchmark, date=date)
-    X = x - _index_weights.reindex(union_stks).replace(np.nan, 0).values
+    X = x - _index_weights.reindex(union_stocks).replace(np.nan, 0).values
 
     result = np.sqrt(np.dot(np.dot(np.matrix(X), covMat * 252), np.matrix(X).T).A1[0])
     return result
 
-def volatility(x,covMat):
+def volatility(x,**kwargs):
+    covMat = kwargs.get("covMat")
     """
     计算投资组合波动率
     :param x:
@@ -93,7 +120,6 @@ def volatility(x,covMat):
     :return:
     """
     return np.sqrt(np.dot(np.dot(np.matrix(x),covMat*252),np.matrix(x).T).A1[0])
-
 
 def industry_customized_constraint(order_book_ids,industryConstraints,date):
     """
@@ -106,7 +132,7 @@ def industry_customized_constraint(order_book_ids,industryConstraints,date):
     constraints = []
     industries_labels = missing_industryLabel_handler(order_book_ids,date)
 
-    if industryConstraints is None:
+    if industryConstraints is None or len(industryConstraints) == 0:
         return []
     elif "*" in industryConstraints.keys() :
         constrainted_industry = sorted(set(industries_labels))
@@ -249,7 +275,7 @@ def style_customized_constraint(order_book_ids,styleConstraints,date):
     constrainedStyle = ['beta', 'momentum', 'size', 'earnings_yield', 'residual_volatility', 'growth',
                         'book_to_price',
                         'leverage', 'liquidity', 'non_linear_size']
-    if styleConstraints is None:
+    if styleConstraints is None or len(styleConstraints) == 0:
         return []
 
     elif "*" in styleConstraints.keys():
@@ -334,47 +360,50 @@ def missing_industryLabel_handler(order_book_ids,date):
 
 # 2018-07-09 calculating var and cvar
 
-def VaR(x,union_stocks,date,confidence_level=5):
+def calc_var(x,**kwargs):
+    covariance = kwargs.get("covariance")
+    specific = kwargs.get("specific")
+    factor_exposure = kwargs.get("factor_exposure")
 
-    covariance = rqdatac.barra.get_factor_covariance(date=date)
-    specific = rqdatac.barra.get_specific_return(union_stocks,start_date=date,end_date=date).iloc[0]
-    factor_exposure = rqdatac.barra.get_factor_exposure(union_stocks,start_date=date,end_date=date).xs(date, level=1)
+    confidence_level = 5
 
     vol = (x.T.dot(((factor_exposure.dot(covariance)).dot(factor_exposure.T)+specific))).dot(x)
-    return norm.interval(1-confidence_level/100,0,vol)[0],vol
+    var = norm.interval(1-confidence_level/100,0,vol)[0]
+    return var,vol
 
-def CVaR(x,union_stocks,date):
-    var,vol = VaR(x,union_stocks,date)
+
+def VaR(x,**kwargs):
+    return -calc_var(x,**kwargs)[0]
+
+
+def CVaR(x,**kwargs):
+    var,vol = calc_var(x,**kwargs)
     return np.sum([0.001* norm(0,vol).pdf(i) for i in np.arange(-4*vol,var,0.001)])
 
 
-def meanVarianceAnalysis(order_book_ids,covMat,dailyReturns):
+def meanVariance(x,**kwargs):
 
-    covMat = covMat.loc[order_book_ids,order_book_ids]
-    dailyReturns = dailyReturns[order_book_ids]
+    dailyReturns = kwargs.get("dailyReturns")
+    expected_returns = kwargs.get("expected_returns",dailyReturns.mean())
 
-    def _simulate():
-        x = np.random.random(len(order_book_ids))
-        x/=np.sum(x)
-        vol = volatility(x,covMat)
-        rets = x.dot(dailyReturns.mean())*252
-        return [vol,rets]
+    portfolio_volatility = volatility(x,**kwargs)
 
-    import matplotlib.pyplot as plt
-    plt.clf()
-    _,ax = plt.subplots()
-    results = pd.DataFrame([_simulate() for i in range(3000)])
-    plt.scatter(results[0],results[1],c=results[1]/results[0])
-    return results.rename(columns={0:"年化波动率",1:"年化收益率"})
-
-def risk_budget(x,covMat):
-    return volatility(x,covMat)
+    return -x.dot(expected_returns)*250 + portfolio_volatility
 
 
+# def risk_budget(x,**kwargs):
+#
+#     return volatility(x,**kwargs)
 
 
+def maximizing_indicator(x,**kwargs):
+    indicator_series = kwargs.get("indicator_series")
+    return -x.dot(indicator_series)
 
-
+def risk_budgeting(x,**kwargs):
+    riskType = kwargs.get("riskType")
+#     TODO 补充上其他风险计算
+    return volatility(x,**kwargs)
 
 
 
