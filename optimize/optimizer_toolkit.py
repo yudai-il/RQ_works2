@@ -6,6 +6,7 @@ from rqdatac import *
 import rqdatac
 import warnings
 from scipy.stats import norm
+import scipy.spatial as scsp
 
 def get_subnew_assets(order_book_ids,date,N,type="CS"):
     """
@@ -52,7 +53,7 @@ def winsorized_std(rawData, n=3):
     mean, std = rawData.mean(), rawData.std()
     return rawData.clip(mean - std * n, mean + std * n)
 
-def stocksPoolHandler(**kwargs):
+def assetsListHandler(**kwargs):
     benchmark = kwargs.get("benchmark")
     date = kwargs.get("date")
     order_book_ids = kwargs.get("order_book_ids")
@@ -84,8 +85,9 @@ def assetsDistinguish(order_book_ids):
     stocksInstruments = instruments(order_book_ids)
     fundsInstruments = fund.instruments(order_book_ids)
 
+    stocksInstrumentsTypes = ([instrument.type for instrument in stocksInstruments])
     cons_all_funds = len(fundsInstruments) == len(order_book_ids)
-    cons_all_stocks = len(stocksInstruments) == len(order_book_ids)
+    cons_all_stocks = stocksInstrumentsTypes.count("CS") == len(order_book_ids)
 
     if not (cons_all_funds or cons_all_stocks):
         raise Exception("输入order_book_ids必须全为股票或者基金")
@@ -108,7 +110,7 @@ def trackingError(x,**kwargs):
     _index_weights = index_weights(benchmark, date=date)
     X = x - _index_weights.reindex(union_stocks).replace(np.nan, 0).values
 
-    result = np.sqrt(np.dot(np.dot(np.matrix(X), covMat * 252), np.matrix(X).T).A1[0])
+    result = np.sqrt(np.dot(np.dot(X, covMat * 252),X))
     return result
 
 def volatility(x,**kwargs):
@@ -119,7 +121,7 @@ def volatility(x,**kwargs):
     :param covMat:
     :return:
     """
-    return np.sqrt(np.dot(np.dot(np.matrix(x),covMat*252),np.matrix(x).T).A1[0])
+    return np.sqrt(np.dot(np.dot(x,covMat*252),x))
 
 def industry_customized_constraint(order_book_ids,industryConstraints,date):
     """
@@ -381,19 +383,16 @@ def CVaR(x,**kwargs):
     return np.sum([0.001* norm(0,vol).pdf(i) for i in np.arange(-4*vol,var,0.001)])
 
 
-def meanVariance(x,**kwargs):
+def mean_variance(x,**kwargs):
 
-    dailyReturns = kwargs.get("dailyReturns")
-    expected_returns = kwargs.get("expected_returns",dailyReturns.mean())
-
+    annualized_return = kwargs.get("annualized_return")
     portfolio_volatility = volatility(x,**kwargs)
 
-    return -x.dot(expected_returns)*250 + portfolio_volatility
+    return -x.dot(annualized_return) + portfolio_volatility
 
-
-# def risk_budget(x,**kwargs):
-#
-#     return volatility(x,**kwargs)
+def maximizing_return(x,**kwargs):
+    annualized_return = kwargs.get("annualized_return")
+    return -x.dot(annualized_return)
 
 
 def maximizing_indicator(x,**kwargs):
@@ -401,9 +400,45 @@ def maximizing_indicator(x,**kwargs):
     return -x.dot(indicator_series)
 
 def risk_budgeting(x,**kwargs):
-    riskType = kwargs.get("riskType")
-#     TODO 补充上其他风险计算
-    return volatility(x,**kwargs)
+    riskMetrics = kwargs.get("riskMetrics")
+    if riskMetrics == "volatility":
+        return volatility(x, **kwargs)
+    else:
+        assert riskMetrics == "tracking_error"
+        return trackingError(x,**kwargs)
+
+def risk_parity(x,**kwargs):
+
+    def risk_parity_with_con_obj_fun(x,c_m):
+        temp1 = np.multiply(x, np.dot(c_m, x))
+        temp2 = temp1[:, None]
+        return np.sum(scsp.distance.pdist(temp2, "euclidean"))
+
+    if kwargs.get("with_cons"):
+        return risk_parity_with_con_obj_fun(x,c_m=kwargs.get("covMat"))
+    else:
+        c=15
+        return 1/2*volatility(x,**kwargs)**2 - c *np.sum(np.log(x))
+
+
+def fund_type_constraints(order_book_ids,fundTypeConstraints):
+    """
+    :param order_book_ids:
+    :param fundTypeConstraints: {"Stock":(0,0.5),"Hybrid":(0,0.3),"Bond":(0,0.1)}
+    :return:
+    """
+    fundTypes = [instrument.fund_type for instrument in fund.instruments(order_book_ids)]
+    fundTypes = pd.Series(fundTypes,index=order_book_ids)
+
+    constraints = []
+
+    for fundType in fundTypeConstraints:
+        fundBounds = fundTypeConstraints.get(fundType)
+        fund_positions = fundTypes.index.get_indexer(fundTypes[fundTypes == fundType].index)
+
+        constraints.append({"type":"ineq","fun":lambda x:sum(x[i] for i in fund_positions) - fundBounds[1]})
+        constraints.append({'typr':"ineq","fun":lambda x : -sum(x[i] for i in fund_positions) +fundBounds[0]})
+    return constraints
 
 
 
