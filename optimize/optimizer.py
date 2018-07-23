@@ -74,7 +74,7 @@ def assetRiskAllocation(order_book_ids,riskBudgetOptions):
         try:
             assetRank = assetRank.astype(np.float64)
         except:
-            print("assetRank只接受float类型的series")
+            print("assetRank只接受float或int类型的series")
         assetRank/=assetRank.sum()
         return assetRank
     else:
@@ -99,7 +99,7 @@ def assetRiskAllocation(order_book_ids,riskBudgetOptions):
 def portfolio_optimize(order_book_ids, date,indicator_series, method=OptimizeMethod.VOLATILITY_MINIMIZATION, cov_estimator="shrinkage",
                             annualized_return = None,fundTypeConstraints = None,
                            window=126, bounds=None, industryConstraints=None, styleConstraints=None,
-                           benchmarkOptions=None,riskBudegtOptions=None):
+                           benchmarkOptions=None,riskBudegtOptions=None,transactionCostOptions=None):
     """
     :param order_book_ids:股票列表
     :param date: 优化日期 如"2018-06-20"
@@ -135,6 +135,21 @@ def portfolio_optimize(order_book_ids, date,indicator_series, method=OptimizeMet
                 - riskMetrics: 风险预算指标 默认为波动率 str volatility,tracking_error
                 - assetRank: 资产评级
                 - groupBudget: 风险预算
+    :param transactionCostOptions: dict 优化器可选参数，该字典接受如下参数
+                - initialCapital: float 即账户中用于构建优化组合的初始资金（元）。用于计算构建优化组合所需要承担的交易费用
+                - currentPositions:账户当前仓位信息（股票以股数为单位，现金以元为单位，公募基金以份额为单位）。对于股票交易费用，会以账户当前股票仓位、现金余额、及当天收盘价计算账户总权益，再计算构建优化组合所需承担的交易费用；对于基金申赎费用，会以账户当前公募基金仓位、现金余额、及当天公募基金公布的单位净值计算账户总权益，再计算构建优化FOF组合所需承担的交易费用。
+                - holdingPeriod:持仓周期，默认为21个交易日（约一个月）
+                - commission:是否考虑股票交易佣金。默认佣金费率为万分之八（0.008）。交易佣金费率可通过参数commissionRatio进行调整
+                - commissionRatio:指定股票交易佣金费率。默认为0.0008
+                - subscriptionRedemption:是否考虑基金申赎费用（不考虑认购费）。各类基金的默认申赎费率见下表。对于申购费用，默认采用前端收费(4)，费用按外扣法计算(5)。申赎费率可通过参数subRedRatio进行调整
+                - subRedRatio:指定基金申赎费率。各类基金的默认申赎费率见下表。假定用户希望优化中对设定股票型基金的申购费率为1%，赎回费率调整为0.5%，则可传入字典型参数如下：{‘Stock’: (0.01, 0.005)}
+                - stampDuty:是否考虑股票交易印花税，税率固定为0.1%（只在卖出股票时征收）。基金申赎不涉及印花税。
+                - marketImpact:股票交易中是否考虑市场冲击成本（计算说明见附录）。基金申赎不考虑该成本
+                - marketImpactRatio:指定市场冲击成本系数。默认为1
+                - customizedCost:用户自定义交易费用。可与上述其它费用加和得到总费用。
+                - cashPosition: 指定现金的仓位
+                - output:是否同时返回个股优化权重和交易费用。默认为 False。若取值为True，则返回相关交易费用相关信息（佣金、印花税、市场冲击成本、申赎费用、日波动率、出清时间）。
+
 
     :return: pandas.Series优化后的个股权重 ,新股列表list(optional),停牌股list(optional)
     """
@@ -227,9 +242,5 @@ def portfolio_optimize(order_book_ids, date,indicator_series, method=OptimizeMet
         optimized_weight = pd.concat([optimized_weight * (1 - unallocatedWeight), supplementStocks])
 
     return optimized_weight, res.status, subnew_stocks, suspended_stocks
-
-
-
-
 
 
