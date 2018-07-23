@@ -3,13 +3,16 @@ from.optimizer import *
 
 
 def calcTransactionCost(order_book_ids,x,date,assetType,transactionOptions):
+
+    transactionOptions = {s[0]: s[1] for s in transactionOptions.items() if s[1] is not None}
+
     initialCapital = transactionOptions.get("initialCapital")
     currentPositions = transactionOptions.get("currentPositions")
     holdingPeriod = transactionOptions.get("holdingPeriod",21)
-    commission = transactionOptions.get("commission")
+    commission = transactionOptions.get("commission",True)
     subscriptionRedemption = transactionOptions.get("subscriptionRedemption")
     stampDuty = transactionOptions.get("stampDuty")
-    marketImpact = transactionOptions.get("marketImpact")
+    marketImpact = transactionOptions.get("marketImpact",True)
     commissionRatio = transactionOptions.get("commissionRatio",0.0008)
     subRedRatio = transactionOptions.get("subRedRatio",{})
     marketImpactRatio = transactionOptions.get("marketImpactRatio",1)
@@ -91,6 +94,7 @@ def calcTransactionCost(order_book_ids,x,date,assetType,transactionOptions):
 
         sides = pd.Series(["SELL" if s in short_position.index else "BUY" for s in all_assets],index=all_assets)
         amounts = positions/latest_price
+
         clearing_time = amounts / avg_volume
         impact_cost = marketImpactRatio * daily_volatility * clearing_time**(1/2)
         stamp_duty_cost = pd.Series([0.001 if stampDuty and s in short_position.index  else 0 for s in all_assets],index=all_assets)
@@ -107,14 +111,18 @@ def calcTransactionCost(order_book_ids,x,date,assetType,transactionOptions):
         else:
             return merged_data['费率']*(252/holdingPeriod)
 
-def tradeAnalysis(initialCapital,currentPositions,plannedPositions,
-                  covEstimator,commission,subscriptionRedemption,stampDuty,
-                  marketImpact,commissionRatio,subRedRatio,marketImpactRatio,customizedCost,output):
+def tradeAnalysis(initialCapital,currentPositions,plannedPositions,covEstimator,commission=True,subscriptionRedemption=True,stampDuty=True,
+                  marketImpact=True,commissionRatio=0.0008,subRedRatio=None,marketImpactRatio=1,customizedCost=None,output=True):
 
-    start_date = list(currentPositions.keys())[0]
+    if currentPositions is not None:
+        start_date = list(currentPositions.keys())[0]
+        currentPositions = currentPositions.get(start_date)
+        currentPositions = currentPositions[~("cash" == currentPositions.index)]
+    else:
+        if initialCapital is None:
+            raise Exception("初始金额和初始仓位中必须指定一个")
+
     end_date = list(plannedPositions.keys())[0]
-
-    currentPositions = currentPositions.get(start_date)
     plannedPositions = plannedPositions.get(end_date)
 
     equity_value = plannedPositions[~("cash" == plannedPositions.index)]
@@ -130,12 +138,13 @@ def tradeAnalysis(initialCapital,currentPositions,plannedPositions,
                           "customizedCost": customizedCost, "output": output
                           }
 
-    all_assets = sorted(set(order_book_ids)|set(currentPositions.index))
+
+    all_assets = sorted(set(order_book_ids)|set(currentPositions.index)) if currentPositions is not None else sorted(order_book_ids)
     assetType = assetsDistinguish(all_assets)
 
     transactionAnalysis = calcTransactionCost(order_book_ids,x,end_date,assetType,transactionOptions)
 
-    before_risk = calc_risk_indicator(currentPositions,start_date,252,assetType,covEstimator)
+    before_risk = calc_risk_indicator(currentPositions,start_date,252,assetType,covEstimator) if currentPositions is not None else pd.DataFrame(columns=["边际风险贡献","风险贡献"])
     after_risk = calc_risk_indicator(plannedPositions,end_date,252,assetType,covEstimator)
 
     before_risk = pd.DataFrame(before_risk).reindex(all_assets).replace(np.nan,0)
@@ -190,6 +199,6 @@ def calc_risk_indicator(positions,date,N,assetType,cov_estimator):
     nominators = calc_nominator(positions,covMat)
 
     MRC = nominators/total_volatility
-    ARC = np.multiply(positions,MRC)
+    CTR = np.multiply(positions,MRC)
 
-    return {"边际风险贡献":MRC,"风险贡献":ARC}
+    return {"边际风险贡献":MRC,"风险贡献":CTR}
