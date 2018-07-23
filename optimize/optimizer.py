@@ -243,4 +243,3 @@ def portfolio_optimize(order_book_ids, date,indicator_series, method=OptimizeMet
 
     return optimized_weight, res.status, subnew_stocks, suspended_stocks
 
-
