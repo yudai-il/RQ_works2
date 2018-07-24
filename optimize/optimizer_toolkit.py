@@ -99,15 +99,13 @@ def trackingError(x,**kwargs):
     """
     跟踪误差约束
     :param x: 权重
-    :param benchmark: 基准
     :param union_stocks:股票并集
-    :param date: 优化日期
+    :param index_weights: 基准权重
     :param covMat: 协方差矩阵
     :return: float
     """
-    benchmark, union_stocks, date, covMat = kwargs.get("benchmark"),kwargs.get("union_stocks"),kwargs.get("date"),kwargs.get("covMat")
+    union_stocks, covMat,_index_weights = kwargs.get("union_stocks"),kwargs.get("covMat"),kwargs.get("index_weights")
     # vector of deviations
-    _index_weights = index_weights(benchmark, date=date)
     X = x - _index_weights.reindex(union_stocks).replace(np.nan, 0).values
 
     result = np.sqrt(np.dot(np.dot(X, covMat * 252),X))
@@ -409,16 +407,20 @@ def risk_budgeting(x,**kwargs):
 
 def risk_parity(x,**kwargs):
 
-    def risk_parity_with_con_obj_fun(x,c_m):
+    c_m = kwargs.get("covMat")
+
+    def risk_parity_with_con_obj_fun(x):
         temp1 = np.multiply(x, np.dot(c_m, x))
         temp2 = temp1[:, None]
         return np.sum(scsp.distance.pdist(temp2, "euclidean"))
 
     if kwargs.get("with_cons"):
-        return risk_parity_with_con_obj_fun(x,c_m=kwargs.get("covMat"))
+        return risk_parity_with_con_obj_fun(x,c_m=c_m)
     else:
         c=15
-        return 1/2*volatility(x,**kwargs)**2 - c *np.sum(np.log(x))
+        res =  np.dot(x, np.dot(c_m, x)) - c * sum(np.log(x))
+        # print(res)
+        return res
 
 
 def fund_type_constraints(order_book_ids,fundTypeConstraints):
@@ -439,6 +441,9 @@ def fund_type_constraints(order_book_ids,fundTypeConstraints):
         constraints.append({"type":"ineq","fun":lambda x:sum(x[i] for i in fund_positions) - fundBounds[1]})
         constraints.append({'typr':"ineq","fun":lambda x : -sum(x[i] for i in fund_positions) +fundBounds[0]})
     return constraints
+
+
+
 
 
 
