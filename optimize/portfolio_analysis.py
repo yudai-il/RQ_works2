@@ -1,6 +1,4 @@
-from.optimizer_toolkit import *
 from.optimizer import *
-
 
 def calcTransactionCost(order_book_ids,x,date,assetType,transactionOptions):
 
@@ -92,7 +90,7 @@ def calcTransactionCost(order_book_ids,x,date,assetType,transactionOptions):
         positions = pd.concat([short_position,long_position])
         positions.name = "交易金额"
 
-        sides = pd.Series(["SELL" if s in short_position.index else "BUY" for s in all_assets],index=all_assets)
+        sides = pd.Series(["卖" if s in short_position.index else "买" for s in all_assets],index=all_assets)
         amounts = positions/latest_price
 
         clearing_time = amounts / avg_volume
@@ -101,7 +99,7 @@ def calcTransactionCost(order_book_ids,x,date,assetType,transactionOptions):
 
         commission = pd.Series([commissionRatio]*len(all_assets),index=all_assets)
 
-        merged_data = pd.DataFrame({"印花税费率":stamp_duty_cost,"佣金费率":commission,"市场冲击成本":impact_cost,"出清时间":clearing_time,"买卖方向":sides,"自定义费用":customizedCost.loc[all_assets].replace(np.nan,0)})
+        merged_data = pd.DataFrame({"交易金额":positions,"印花税费率":stamp_duty_cost,"佣金费率":commission,"市场冲击成本":impact_cost,"出清时间（天）":clearing_time,"买卖方向":sides,"自定义费用":customizedCost.loc[all_assets].replace(np.nan,0)})
         merged_data['总交易费用'] = commission+impact_cost+merged_data['自定义费用']
     if output:
         return merged_data
@@ -110,6 +108,44 @@ def calcTransactionCost(order_book_ids,x,date,assetType,transactionOptions):
             return merged_data['总交易费用']*(252/holdingPeriod)
         else:
             return merged_data['费率']*(252/holdingPeriod)
+
+def calc_cummulativeReturn_analysis(positions,date,N,assetType):
+    order_book_ids = positions.index.tolist()
+    start_date = pd.Timestamp(date)-np.timedelta64(N,"D")
+    price_data = fund.get_nav(order_book_ids, start_date=start_date, end_date=date,
+                              fields="adjusted_net_value") if assetType == "Fund" else get_price(order_book_ids,
+                                                                                                 start_date, date,
+                                                                                                 fields="close")
+    return price_data.pct_change().dropna(how="all").add(1).prod()-1
+
+
+def calc_risk_indicator(positions,date,N,assetType,cov_estimator):
+    positions = positions[~(positions.index == "cash")]
+    order_book_id = positions.index.tolist()
+    start_date = pd.Timestamp(date) - np.timedelta64(N, "D")
+    price_data = fund.get_nav(order_book_id, start_date=start_date, end_date=date,
+                              fields="adjusted_net_value") if assetType == "Fund" else get_price(order_book_id,
+                                                                                                 start_date, date,
+                                                                                                 fields="close")
+    positions = positions*price_data.iloc[-1]
+    positions/=positions.sum()
+
+    daily_returns = price_data.pct_change().dropna(how="all")
+    kwargs = {"daily_returns":daily_returns,"cov_estimator":cov_estimator}
+    covMat = covarianceEstimation(daily_returns,cov_estimator)
+    kwargs["covMat"] = covMat
+    total_volatility = volatility(positions.values,**kwargs)
+
+    def calc_nominator(x,covMat):
+        return x.dot(covMat)*252
+
+    nominators = calc_nominator(positions,covMat)
+
+    MRC = nominators/total_volatility
+    CTR = np.multiply(positions,MRC)
+
+    return {"边际风险贡献":MRC,"风险贡献":CTR}
+
 
 def tradeAnalysis(initialCapital,currentPositions,plannedPositions,covEstimator,commission=True,subscriptionRedemption=True,stampDuty=True,
                   marketImpact=True,commissionRatio=0.0008,subRedRatio=None,marketImpactRatio=1,customizedCost=None,output=True):
@@ -135,7 +171,7 @@ def tradeAnalysis(initialCapital,currentPositions,plannedPositions,covEstimator,
                           "subscriptionRedemption": subscriptionRedemption, "stampDuty": stampDuty,
                           "marketImpact": marketImpact, "commissionRatio": commissionRatio,
                           "subRedRatio": subRedRatio, "marketImpactRatio": marketImpactRatio,
-                          "customizedCost": customizedCost, "output": output
+                          "customizedCost": customizedCost, "output": True
                           }
 
 
@@ -151,7 +187,7 @@ def tradeAnalysis(initialCapital,currentPositions,plannedPositions,covEstimator,
     after_risk = pd.DataFrame(after_risk).reindex(all_assets).replace(np.nan,0)
 
     delta = after_risk-before_risk
-    delta.columns = ['△边际风险贡献','△风险贡献']
+    delta.columns = ['边际风险贡献变化','风险贡献变化']
     after_risk.rename(columns = {"边际风险贡献":"计划持仓边际风险","风险贡献":"计划持仓风险贡献"},inplace=True)
     before_risk.rename(columns = {"边际风险贡献":"当前持仓边际风险","风险贡献":"当前持仓风险贡献"},inplace=True)
 
@@ -162,43 +198,32 @@ def tradeAnalysis(initialCapital,currentPositions,plannedPositions,covEstimator,
     returnAnalysis = pd.DataFrame({"最近一周累积收益":res1,"最近一个月累积收益":res2,"最近三个月累积收益":res3})
     riskAnalysis = pd.concat([before_risk,after_risk,delta],axis=1)
 
-    return {"收益分析":returnAnalysis,"风险分析":riskAnalysis,"交易费用分析":transactionAnalysis}
+
+    x = transactionAnalysis[['佣金费率','印花税费率','市场冲击成本','自定义费用','总交易费用']]
+
+    conclusion_cost = transactionAnalysis['交易金额'].dot(x)/(transactionAnalysis['交易金额'].sum())
+    conclusion_cost = conclusion_cost.apply(lambda x:"{}%".format(np.round(x*100,4)))
+
+    conclusion_risk = riskAnalysis[['当前持仓风险贡献', '计划持仓风险贡献']].sum()
+
+    output_df = pd.concat([returnAnalysis,riskAnalysis,transactionAnalysis],axis=1)
 
 
-def calc_cummulativeReturn_analysis(positions,date,N,assetType):
-    order_book_ids = positions.index.tolist()
-    start_date = pd.Timestamp(date)-np.timedelta64(N,"D")
-    price_data = fund.get_nav(order_book_ids, start_date=start_date, end_date=date,
-                              fields="adjusted_net_value") if assetType == "Fund" else get_price(order_book_ids,
-                                                                                                 start_date, date,
-                                                                                                 fields="close")
-    return price_data.pct_change().dropna(how="all").add(1).prod()-1
+    output_df['名称'] = pd.Series([instruments(s).symbol for s in all_assets],index=all_assets)
+    columns_items = ['名称','买卖方向','最近一个月累积收益', '最近一周累积收益', '最近三个月累积收益', '当前持仓边际风险', '当前持仓风险贡献',
+       '计划持仓边际风险', '计划持仓风险贡献', '边际风险贡献变化', '风险贡献变化', '佣金费率',
+       '出清时间（天）', '印花税费率', '市场冲击成本', '自定义费用', '总交易费用']
+
+    output_df = output_df[columns_items]
+    output_df.sort_values(by='买卖方向',inplace=True)
+
+    format_columns = ['最近一个月累积收益', '最近一周累积收益', '最近三个月累积收益','佣金费率','印花税费率', '市场冲击成本', '自定义费用', '总交易费用']
+    output_df[format_columns] = output_df[format_columns].apply(lambda x:x.apply(lambda x:"{}%".format(np.round(x*100,4)))).replace("nan%",np.nan)
+
+    output_df.loc['汇总'] = pd.concat([conclusion_cost,conclusion_risk]).reindex(output_df.columns.tolist()).replace(np.nan,'--')
+
+    return output_df
+    # return {"收益分析":returnAnalysis,"风险分析":riskAnalysis,"交易费用分析":transactionAnalysis}
 
 
-def calc_risk_indicator(positions,date,N,assetType,cov_estimator):
-    positions = positions[~(positions.index == "cash")]
-    order_book_id = positions.index.tolist()
-    start_date = pd.Timestamp(date) - np.timedelta64(N, "D")
-    price_data = fund.get_nav(order_book_id, start_date=start_date, end_date=date,
-                              fields="adjusted_net_value") if assetType == "Fund" else get_price(order_book_id,
-                                                                                                 start_date, date,
-                                                                                                 fields="close")
-    positions = positions*price_data.iloc[-1]
-    positions/=positions.sum()
 
-    daily_returns = price_data.pct_change().dropna(how="all")
-    kwargs = {"daily_returns":daily_returns,"cov_estimator":cov_estimator}
-
-    covMat = covarianceEstimation(**kwargs)
-    kwargs["covMat"] = covMat
-    total_volatility = volatility(positions.values,**kwargs)
-
-    def calc_nominator(x,covMat):
-        return x.dot(covMat)*252
-
-    nominators = calc_nominator(positions,covMat)
-
-    MRC = nominators/total_volatility
-    CTR = np.multiply(positions,MRC)
-
-    return {"边际风险贡献":MRC,"风险贡献":CTR}
