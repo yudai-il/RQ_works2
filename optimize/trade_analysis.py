@@ -56,7 +56,7 @@ def calcTransactionCost(order_book_ids,x,date,assetType,transactionOptions):
 
     # 对于基金
     if assetType == "Fund":
-        item_names = ['费用', '费率', '份额']
+        item_names = ['申赎费用', '申赎费率', '申赎份额']
         subscription_ratios = pd.Series({s.order_book_id:subRedRatio.get(s.fund_type,(0,0))[0]for s in fund.instruments(long_position.index.tolist())})
         redemption_ratios = pd.Series({s.order_book_id:subRedRatio.get(s.fund_type,(0,0))[1] for s in fund.instruments(short_position.index.tolist())})
 
@@ -73,10 +73,10 @@ def calcTransactionCost(order_book_ids,x,date,assetType,transactionOptions):
         redemption_costs['交易方向'] = '赎回'
 
         merged_data = pd.concat([subscription_costs,redemption_costs])
-        merged_data['自定义费用'] = customizedCost.loc[all_assets].replace(np.nan,0)
-        merged_data['总费用'] = merged_data['费用']+merged_data['自定义费用']
-        merged_data['费率'] = merged_data['总费用']/pd.concat([long_position,short_position])
-
+        merged_data['交易金额'] = pd.concat([long_position, short_position])
+        merged_data['自定义费率'] = customizedCost.loc[all_assets].replace(np.nan,0)
+        merged_data['总费率'] = merged_data['申赎费率']+merged_data['自定义费率']
+        merged_data['自定义费用'] = merged_data['自定义费率']*merged_data['交易金额']
 
     else:
         assert assetType == "CS"
@@ -99,17 +99,17 @@ def calcTransactionCost(order_book_ids,x,date,assetType,transactionOptions):
 
         commission = pd.Series([commissionRatio]*len(all_assets),index=all_assets)
 
-        merged_data = pd.DataFrame({"交易金额":positions,"印花税费率":stamp_duty_cost,"佣金费率":commission,"市场冲击成本":impact_cost,"出清时间（天）":clearing_time,"买卖方向":sides,"自定义费用":customizedCost.loc[all_assets].replace(np.nan,0)})
-        merged_data['总交易费用'] = commission+impact_cost+merged_data['自定义费用']+stamp_duty_cost
+        merged_data = pd.DataFrame({"交易股数":amounts,"交易金额":positions,"印花税费率":stamp_duty_cost,"佣金费率":commission,"市场冲击成本":impact_cost,"出清时间（天）":clearing_time,"交易方向":sides,"自定义费率":customizedCost.loc[all_assets].replace(np.nan,0)})
+        merged_data['总交易费用'] = commission+impact_cost+merged_data['自定义费率']+stamp_duty_cost
     if output:
         return merged_data
     else:
         if assetType == "CS":
             return merged_data['总交易费用']*(252/holdingPeriod)
         else:
-            return merged_data['费率']*(252/holdingPeriod)
+            return merged_data['总费率']*(252/holdingPeriod)
 
-def calc_cummulativeReturn_analysis(all_assets,date,N,assetType):
+def calc_cummulativeReturn(all_assets,date,N,assetType):
     start_date = pd.Timestamp(date)-np.timedelta64(N,"D")
     price_data = fund.get_nav(all_assets, start_date=start_date, end_date=date,
                               fields="adjusted_net_value") if assetType == "Fund" else get_price(all_assets,
@@ -118,7 +118,7 @@ def calc_cummulativeReturn_analysis(all_assets,date,N,assetType):
     return price_data.pct_change().dropna(how="all").add(1).prod()-1
 
 
-def calc_risk_indicator(positions,date,N,assetType,cov_estimator):
+def risk_decomposition(positions,date,N,assetType,cov_estimator):
     positions = positions[~(positions.index == "cash")]
     order_book_id = positions.index.tolist()
     start_date = pd.Timestamp(date) - np.timedelta64(N, "D")
@@ -135,10 +135,10 @@ def calc_risk_indicator(positions,date,N,assetType,cov_estimator):
     kwargs["covMat"] = covMat
     total_volatility = volatility(positions.values,**kwargs)
 
-    def calc_nominator(x,covMat):
+    def _calc_numerator(x,covMat):
         return x.dot(covMat)*252
 
-    nominators = calc_nominator(positions,covMat)
+    nominators = _calc_numerator(positions,covMat)
 
     MRC = nominators/total_volatility
     CTR = np.multiply(positions,MRC)
@@ -178,49 +178,59 @@ def tradeAnalysis(initialCapital,currentPositions,plannedPositions,covEstimator,
 
     transactionAnalysis = calcTransactionCost(order_book_ids,x,end_date,assetType,transactionOptions)
 
-    before_risk = calc_risk_indicator(currentPositions,start_date,252,assetType,covEstimator) if currentPositions is not None else pd.DataFrame(columns=["边际风险贡献","风险贡献"])
-    after_risk = calc_risk_indicator(plannedPositions,end_date,252,assetType,covEstimator)
+    current_risk = risk_decomposition(currentPositions,start_date,252,assetType,covEstimator) if currentPositions is not None else pd.DataFrame(columns=["边际风险贡献","风险贡献"])
+    planned_risk = risk_decomposition(plannedPositions,end_date,252,assetType,covEstimator)
 
-    before_risk = pd.DataFrame(before_risk).reindex(all_assets).replace(np.nan,0)
-    after_risk = pd.DataFrame(after_risk).reindex(all_assets).replace(np.nan,0)
+    current_risk = pd.DataFrame(current_risk).reindex(all_assets).replace(np.nan,0)
+    planned_risk = pd.DataFrame(planned_risk).reindex(all_assets).replace(np.nan,0)
 
-    delta = after_risk-before_risk
-    delta.columns = ['边际风险贡献变化','风险贡献变化']
-    after_risk.rename(columns = {"边际风险贡献":"计划持仓边际风险","风险贡献":"计划持仓风险贡献"},inplace=True)
-    before_risk.rename(columns = {"边际风险贡献":"当前持仓边际风险","风险贡献":"当前持仓风险贡献"},inplace=True)
+    risk_delta = planned_risk-current_risk
+    risk_delta.columns = ['边际风险贡献变化','风险贡献变化']
+    planned_risk.rename(columns = {"边际风险贡献":"计划持仓边际风险","风险贡献":"计划持仓风险贡献"},inplace=True)
+    current_risk.rename(columns = {"边际风险贡献":"当前持仓边际风险","风险贡献":"当前持仓风险贡献"},inplace=True)
 
-    res1 = calc_cummulativeReturn_analysis(all_assets, end_date, 7, assetType)
-    res2 = calc_cummulativeReturn_analysis(all_assets, end_date, 30, assetType)
-    res3 = calc_cummulativeReturn_analysis(all_assets, end_date, 90, assetType)
+    res1 = calc_cummulativeReturn(all_assets, end_date, 7, assetType)
+    res2 = calc_cummulativeReturn(all_assets, end_date, 30, assetType)
+    res3 = calc_cummulativeReturn(all_assets, end_date, 90, assetType)
 
-    returnAnalysis = pd.DataFrame({"最近一周累积收益":res1,"最近一个月累积收益":res2,"最近三个月累积收益":res3})
-    riskAnalysis = pd.concat([before_risk,after_risk,delta],axis=1)
+    returnAnalysis = pd.DataFrame({"近一周累积收益":res1,"近一个月累积收益":res2,"近三个月累积收益":res3})
+    riskAnalysis = pd.concat([current_risk,planned_risk,risk_delta],axis=1)
 
-    x = transactionAnalysis[['佣金费率','印花税费率','市场冲击成本','自定义费用','总交易费用']]
+    if assetType == "CS":
+        transactionAnalysis['出清时间（天）'] = np.round(transactionAnalysis['出清时间（天）'], 6)
+        x = transactionAnalysis[['佣金费率','印花税费率','市场冲击成本','自定义费率','总交易费用']]
+        total_cost = transactionAnalysis['交易金额'].dot(x)/(transactionAnalysis['交易金额'].sum())
+    else:
+        assert assetType == "Fund"
+        total_cost = transactionAnalysis[['申赎费用','自定义费用']].sum()/transactionAnalysis['交易金额'].sum()
+        total_cost.rename(index={"申赎费用":"申赎费率",'自定义费用':"自定义费率"},inplace=True)
+        total_cost['总费率'] = total_cost['申赎费率']+total_cost['自定义费率']
+    total_cost = total_cost.apply(lambda x:"{}%".format(np.round(x*100,4)))
 
-    conclusion_cost = transactionAnalysis['交易金额'].dot(x)/(transactionAnalysis['交易金额'].sum())
-    conclusion_cost = conclusion_cost.apply(lambda x:"{}%".format(np.round(x*100,4)))
-
-    conclusion_risk = riskAnalysis[['当前持仓风险贡献', '计划持仓风险贡献']].sum()
-    conclusion_risk['风险贡献变化'] = conclusion_risk['计划持仓风险贡献'] - conclusion_risk['当前持仓风险贡献']
-    conclusion_risk = conclusion_risk.apply(lambda x:"{}%".format(np.round(x*100,4)))
+    total_risk = riskAnalysis[['当前持仓风险贡献', '计划持仓风险贡献']].sum()
+    total_risk['风险贡献变化'] = total_risk['计划持仓风险贡献'] - total_risk['当前持仓风险贡献']
+    total_risk = total_risk.apply(lambda x:"{}%".format(np.round(x*100,4)))
 
     output_df = pd.concat([returnAnalysis,riskAnalysis,transactionAnalysis],axis=1)
 
-    output_df['名称'] = pd.Series([instruments(s).symbol for s in all_assets],index=all_assets)
-    columns_items = ['名称','买卖方向','最近一个月累积收益', '最近一周累积收益', '最近三个月累积收益', '当前持仓边际风险','计划持仓边际风险','边际风险贡献变化',
+    output_df['名称'] = pd.Series([instruments(s).symbol for s in all_assets],index=all_assets) if assetType == "CS" else pd.Series([fund.instruments(s).symbol for s in all_assets],index=all_assets)
+    columns_items = ['名称','交易方向','交易股数', '近一周累积收益','近一个月累积收益', '近三个月累积收益', '当前持仓边际风险','计划持仓边际风险','边际风险贡献变化',
                      '当前持仓风险贡献','计划持仓风险贡献',  '风险贡献变化', '佣金费率',
-       '出清时间（天）', '印花税费率', '市场冲击成本', '自定义费用', '总交易费用']
+       '出清时间（天）', '印花税费率', '市场冲击成本', '自定义费率', '总交易费用'] if assetType == "CS" else ['名称','交易方向','申赎份额','近一周累积收益','近一个月累积收益',  '近三个月累积收益', '当前持仓边际风险','计划持仓边际风险','边际风险贡献变化',
+                     '当前持仓风险贡献','计划持仓风险贡献',  '风险贡献变化','申赎费率', '自定义费率', '总费率']
 
     output_df = output_df[columns_items]
-    output_df['出清时间（天）'] = np.round(output_df['出清时间（天）'],6)
 
-    format_columns = ['最近一个月累积收益', '最近一周累积收益', '最近三个月累积收益','佣金费率','印花税费率', '市场冲击成本', '自定义费用', '总交易费用','当前持仓边际风险','计划持仓边际风险','边际风险贡献变化',
-                     '当前持仓风险贡献','计划持仓风险贡献',  '风险贡献变化']
-    output_df[format_columns] = output_df[format_columns].apply(lambda x:x.apply(lambda x:"{}%".format(np.round(x*100,4))))
+    columns_names = ['近一周累积收益','近一个月累积收益', '近三个月累积收益','佣金费率','印花税费率', '市场冲击成本', '自定义费率', '总交易费用','当前持仓边际风险','计划持仓边际风险','边际风险贡献变化',
+                     '当前持仓风险贡献','计划持仓风险贡献',  '风险贡献变化'] if assetType == "CS" else ['近一个月累积收益', '近一周累积收益', '近三个月累积收益','申赎费率','当前持仓边际风险','计划持仓边际风险','边际风险贡献变化',
+                     '当前持仓风险贡献','计划持仓风险贡献',  '风险贡献变化','总费率']
 
-    output_df.loc['汇总'] = pd.concat([conclusion_cost,conclusion_risk]).reindex(output_df.columns.tolist()).replace(np.nan,'--')
-    output_df.sort_values(by='买卖方向', inplace=True)
+    output_df[columns_names] = output_df[columns_names].apply(lambda x:x.apply(lambda x:"{}%".format(np.round(x*100,4))))
+
+    output_df.loc['汇总'] = pd.concat([total_cost,total_risk]).reindex(output_df.columns.tolist()).replace(np.nan,'--')
+    output_df.sort_values(by='交易方向', inplace=True)
+
+    output_df.index.name = "证券代码" if assetType == "CS" else "基金代码"
 
     return output_df
 
