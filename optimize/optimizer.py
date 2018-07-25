@@ -62,7 +62,17 @@ def covarianceEstimation(daily_returns,cov_estimator):
     return covMat
 
 def assetRiskAllocation(order_book_ids,riskBudgetOptions):
-
+    """
+    根据传入的风险预算字典进行单个资产风险预算分配
+    按如下逻辑进行风险分配：
+    （1）若用户输入单个资产评级序列，则按评级进行风险分配；
+    （2）若用户输入各类资产的风险分配字典，则按给定值对各类资产分配风险，再在每类资产内部对每个资产分配相同风险；
+    （3）若用户同时提供单个资产评级序列和各类资产风险分配字典，则优先按单个资产评级进行风险分配
+    （4）若用户未提供单个资产评级序列或各类资产风险分配字典，则按对每个资产分配相同风险进行计算（即风险平价）
+    :param order_book_ids: 股票列表 list
+    :param riskBudgetOptions: 风险预算的字典 dict
+    :return:
+    """
     assetRank = riskBudgetOptions.get("assetRank")
     assetLabel = riskBudgetOptions.get("assetLabel")
     groupBudget = riskBudgetOptions.get("groupBudget")
@@ -97,7 +107,7 @@ def assetRiskAllocation(order_book_ids,riskBudgetOptions):
 
 
 
-def portfolio_optimize(order_book_ids, date,indicator_series=None, method=OptimizeMethod.VOLATILITY_MINIMIZATION, cov_estimator="empirical",
+def portfolio_optimize2(order_book_ids, date,indicator_series=None, method=OptimizeMethod.VOLATILITY_MINIMIZATION, cov_estimator="empirical",
                             annualized_return = None,fundTypeConstraints = None,
                             max_iteration = 1000,tol = 1e-8,quiet = False,
                            window=126, bounds=None, industryConstraints=None, styleConstraints=None,
@@ -177,7 +187,7 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
 
     if _benchmark is not None and assetsType == "Fund":
         raise Exception("OPTIMIZER: [基金] 不支持 包含跟踪误差 约束 的权重优化 ")
-    if annualized_return is not None and (method is OptimizeMethod.MEAN_VARIANCE or method is OptimizeMethod.RETURN_MAXIMIZATION):
+    if (not isinstance(annualized_return,pd.Series)) and (method is OptimizeMethod.MEAN_VARIANCE or method is OptimizeMethod.RETURN_MAXIMIZATION):
         raise Exception("OPTIMIZER: 均值方差和预期收益最大化时需要指定 annualized_return [预期年化收益]")
     # if _benchmark is not None and not isinstance(trackingErrorThreshold,float):
     #     raise Exception("OPTIMIZER: 指定 float 类型 的 trackingErrorThreshold [跟踪误差阈值]")
@@ -196,8 +206,10 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
                                               styleNeutral=styleNeutral, styleDeviation=styleDeviation,fundTypeConstraints=fundTypeConstraints)
 
     # 对于风险平价，将bounds进行该写避免log报错 1e-6
-    # bnds
-    if method is OptimizeMethod.RISK_BUDGETING or method is OptimizeMethod.RISK_PARITY:
+    optimize_with_cons_or_bnds = (len(constraints)>1 or len(bounds)>0)
+    risk_parity_without_cons_and_bnds = (not optimize_with_cons_or_bnds) and method is OptimizeMethod.RISK_PARITY
+
+    if method is OptimizeMethod.RISK_BUDGETING or risk_parity_without_cons_and_bnds:
         bnds = tuple([(1e-6,None) if _bnds[0] == 0 else _bnds for _bnds in bnds])
 
     start_date = pd.Timestamp(date) - np.timedelta64(window * 2, "D")
@@ -212,7 +224,7 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
 
     x0 = (pd.Series(1, index=order_book_ids) / len(order_book_ids)).reindex(union_stocks).replace(np.nan, 0).values
 
-    components_weights = index_weights(benchmark,date) if benchmark is not None else None
+    components_weights = index_weights(benchmark,date).reindex(union_stocks).replace(np.nan, 0).values if benchmark is not None else None
 
     if isinstance(trackingErrorThreshold,float):
         constraints_covMat = covarianceEstimation(daily_returns=daily_returns,
@@ -227,22 +239,30 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
     #     factor_exposure = rqdatac.barra.get_factor_exposure(order_book_ids,start_date=date,end_date=date).xs(date, level=1)
     #     kwargs_var = {"covariance":covariance,"specific":specific,"factor_exposure":factor_exposure}
 
+    riskbudget_riskMetrics = riskBudgetOptions.get("riskMetrics", "volatility")
+
     if method is OptimizeMethod.RISK_BUDGETING:
         riskBudgetOptions.update({"assetsType":assetsType})
         riskBudgets = assetRiskAllocation(order_book_ids, riskBudgetOptions)
         riskBudgets = riskBudgets.reindex(union_stocks).replace(np.nan,0)
         constraints = []
-        constraints.append({"type": "ineq", "fun": lambda x: riskBudgets.dot(np.log(x)) - 13})
+        print(riskBudgets[riskBudgets>0])
+        if riskbudget_riskMetrics == "volatility":
+            constraints.append({"type": "ineq", "fun": lambda x: riskBudgets.dot(np.log(x)) - 13})
+        else:
+            assert riskbudget_riskMetrics == "tracking_error"
+            print("tracking_error_constraints")
+            constraints.append({"type":"ineq","fun":lambda x:riskBudgets.dot(np.log(x-components_weights))+100})
 
     kwargs = {"covMat": objective_covMat, "benchmark": benchmark, "union_stocks": union_stocks, "date": date,
                   "indicator_series": indicator_series,"index_weights":components_weights}
-    kwargs.update({"riskMetrics":riskBudgetOptions.get("riskMetrics","volatility")})
+    kwargs.update({"riskMetrics":riskbudget_riskMetrics})
+    annualized_return = annualized_return.loc[order_book_ids].replace(np.nan,0) if annualized_return is not None else None
     kwargs.update({"annualized_return":annualized_return})
     # kwargs.update(kwargs_var)
 
     # 对风险平价有效，是否带有约束条件
-    if len(constraints)>1:
-        kwargs.update({"with_cons":True})
+    kwargs.update({"with_cons":optimize_with_cons_or_bnds})
 
     def _objectiveFunction(x):
         return objectiveFunction(x, method, **kwargs)
@@ -256,16 +276,27 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
         return _fun
 
     iter_method = "SLSQP"
-    if method is OptimizeMethod.RISK_PARITY and len(constraints)<=1:
+    if risk_parity_without_cons_and_bnds:
         # 不带有约束的风险平价
         constraints = None
         iter_method = "L-BFGS-B"
         options = {'maxiter': max_iteration}
 
+    # if method in [OptimizeMethod.MEAN_VARIANCE,
+    #               OptimizeMethod.VOLATILITY_MINIMIZATION] or risk_parity_without_cons_and_bnds:
+    #     optimization_results = minimize(_objectiveFunction, x0, bounds=bnds, jac=_get_gradient, constraints=constraints,
+    #                                     method=iter_method, options=options)
+    # else:
+    #     print("without gradient")
+    #     optimization_results = minimize(_objectiveFunction, x0, bounds=bnds,constraints=constraints,
+    #                                     method=iter_method, options=options)
+    # return optimization_results
+    print(kwargs.get("with_cons"))
     while True:
-        if method in [OptimizeMethod.RISK_PARITY,OptimizeMethod.MEAN_VARIANCE,OptimizeMethod.VOLATILITY_MINIMIZATION]:
+        if method in [OptimizeMethod.MEAN_VARIANCE,OptimizeMethod.VOLATILITY_MINIMIZATION] or risk_parity_without_cons_and_bnds:
             optimization_results = minimize(_objectiveFunction, x0, bounds=bnds, jac=_get_gradient,constraints=constraints, method=iter_method, options=options)
         else:
+            print("without gradient")
             optimization_results = minimize(_objectiveFunction, x0, bounds=bnds, jac=None,constraints=constraints, method=iter_method, options=options)
 
         if optimization_results.success:
@@ -280,6 +311,7 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
             print(optimization_results)
             return optimized_weight, optimization_results.status, subnew_stocks, suspended_stocks
         elif optimization_results.status == 8:
+            print("entering an another rounds")
             if options['ftol'] >= 1e-3:
                 raise Exception(u'OPTIMIZER: 优化无法收敛到足够精度')
             options['ftol'] *=10
@@ -300,7 +332,11 @@ def min_variance_gradient(x, **kwargs):
 def mean_variance_gradient(x, **kwargs):
     c_m = kwargs.get("c_m")
     annualized_return = kwargs.get("annualized_return")
-    return np.asarray(np.dot(x, c_m)) - annualized_return
+
+    return np.asfarray(np.multiply(1, np.dot(x, c_m)).transpose()
+                       - annualized_return).flatten()
+
+    # return np.asarray(np.dot(x, c_m)) - annualized_return
 
 def getGradient(x,method,**kwargs):
 
