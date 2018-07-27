@@ -1,9 +1,8 @@
 from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
-from .optimizer_toolkit import *
-# from .portfolio_analysis import *
+from .optimize_toolkit import *
 from enum import Enum
-
+import datetime
 
 class OptimizeMethod(Enum):
     INDICATOR_MAXIMIZATION = maximizing_indicator
@@ -17,7 +16,6 @@ class OptimizeMethod(Enum):
 def objectiveFunction(x, function, **kwargs):
     return function(x, **kwargs)
 
-
 def constraintsGeneration(order_book_ids,assetsType, union_stocks, benchmark, date, bounds, industryConstraints, industryNeutral,
                           industryDeviation, styleConstraints, styleNeutral, styleDeviation,fundTypeConstraints):
 
@@ -29,7 +27,8 @@ def constraintsGeneration(order_book_ids,assetsType, union_stocks, benchmark, da
     not_weighted_stocks = set(union_stocks) - set(order_book_ids)
     bnds1 = {s: (0, 0) for s in not_weighted_stocks}
     bounds.update(bnds1)
-    bnds = tuple([bounds.get(s) if s in bounds else (0, 1) for s in union_stocks])
+    bounds = {s:bounds.get(s) if s in bounds else (0, 1) for s in union_stocks}
+    bnds = tuple([bounds.get(s) for s in union_stocks])
 
     constraints = [{"type": "eq", "fun": lambda x: sum(x) - 1}]
     if assetsType == "CS":
@@ -58,8 +57,16 @@ def constraintsGeneration(order_book_ids,assetsType, union_stocks, benchmark, da
 
 def covarianceEstimation(daily_returns,cov_estimator):
     lw = LedoitWolf()
-    covMat = lw.fit(daily_returns).covariance_ if cov_estimator == "shrinkage" else daily_returns.cov()
-    return covMat
+    if cov_estimator == "shrinkage":
+        return lw.fit(daily_returns).covariance_
+    elif cov_estimator == "empirical":
+        return daily_returns.cov()
+    elif cov_estimator == "multifactor":
+        # FIXME
+        return None
+    else:
+        raise Exception("协方差矩阵类型为[shrinkage,empirical,multifactor]")
+
 
 def assetRiskAllocation(order_book_ids,riskBudgetOptions):
     """
@@ -105,9 +112,10 @@ def assetRiskAllocation(order_book_ids,riskBudgetOptions):
         else:
             return pd.Series(1. / len(order_book_ids), index=order_book_ids)
 
+MIN_OPTIMIZE_DATE = datetime.datetime(2005, 7, 1)
+MIN_OPTIMIZE_DATE_STR = '2005-07-01'
 
-
-def portfolio_optimize2(order_book_ids, date,indicator_series=None, method=OptimizeMethod.VOLATILITY_MINIMIZATION, cov_estimator="empirical",
+def portfolio_optimize(order_book_ids, date,indicator_series=None, method=OptimizeMethod.VOLATILITY_MINIMIZATION, cov_estimator="empirical",
                             annualized_return = None,fundTypeConstraints = None,
                             max_iteration = 1000,tol = 1e-8,quiet = False,
                            window=126, bounds=None, industryConstraints=None, styleConstraints=None,
@@ -181,6 +189,9 @@ def portfolio_optimize2(order_book_ids, date,indicator_series=None, method=Optim
     industryConstraints = {} if industryConstraints is None else industryConstraints
     styleConstraints = {} if styleConstraints is None else styleConstraints
 
+    if isinstance(date,str) and date <MIN_OPTIMIZE_DATE_STR or (isinstance(date,datetime.datetime)) and date <MIN_OPTIMIZE_DATE:
+        raise Exception("日期不能早于2005-07-01（之前没有足够的数据）")
+
     # 避免选用了 风险预算的 volatility 并且 指定了阈值
     _benchmark = benchmark if (method is OptimizeMethod.TRACKING_ERROR_MINIMIZATION or isinstance(trackingErrorThreshold,float) or (riskBudgetOptions.get("riskMetrics") == "tracking_error")) else None
     assetsType = assetsDistinguish(order_book_ids)
@@ -189,13 +200,17 @@ def portfolio_optimize2(order_book_ids, date,indicator_series=None, method=Optim
         raise Exception("OPTIMIZER: [基金] 不支持 包含跟踪误差 约束 的权重优化 ")
     if (not isinstance(annualized_return,pd.Series)) and (method is OptimizeMethod.MEAN_VARIANCE or method is OptimizeMethod.RETURN_MAXIMIZATION):
         raise Exception("OPTIMIZER: 均值方差和预期收益最大化时需要指定 annualized_return [预期年化收益]")
-    # if _benchmark is not None and not isinstance(trackingErrorThreshold,float):
-    #     raise Exception("OPTIMIZER: 指定 float 类型 的 trackingErrorThreshold [跟踪误差阈值]")
 
     order_book_ids, union_stocks, suspended_stocks, subnew_stocks = assetsListHandler(date=date,
                                                                                       order_book_ids=order_book_ids,
                                                                                       window=window,
                                                                                       benchmark=_benchmark,assetsType=assetsType)
+
+    if not quiet:
+        if len(suspended_stocks) > 0:
+            warnings.warn("OPTIMIZER:在回溯{}天出现停牌{}的股票已被剔除".format(window,suspended_stocks))
+        if len(subnew_stocks)>0:
+            warnings.warn("OPTIMIZER:{}上市时间过短,被剔除".format(subnew_stocks))
 
     if len(order_book_ids)<=2:
         raise Exception("OPTIMIZER: 经过剔除后，合约数目不足2个")
@@ -233,12 +248,6 @@ def portfolio_optimize2(order_book_ids, date,indicator_series=None, method=Optim
         trackingErrorOptions = {"covMat": constraints_covMat, "union_stocks": union_stocks,"index_weights":components_weights}
         constraints.append({"type": "ineq", "fun": lambda x: -trackingError(x,**trackingErrorOptions) + trackingErrorThreshold})
 
-    # if method is OptimizeMethod.VAR or method is OptimizeMethod.CVAR:
-    #     covariance = rqdatac.barra.get_factor_covariance(date=date)
-    #     specific = rqdatac.barra.get_specific_return(order_book_ids,start_date=date,end_date=date).iloc[0]
-    #     factor_exposure = rqdatac.barra.get_factor_exposure(order_book_ids,start_date=date,end_date=date).xs(date, level=1)
-    #     kwargs_var = {"covariance":covariance,"specific":specific,"factor_exposure":factor_exposure}
-
     riskbudget_riskMetrics = riskBudgetOptions.get("riskMetrics", "volatility")
 
     if method is OptimizeMethod.RISK_BUDGETING:
@@ -246,27 +255,41 @@ def portfolio_optimize2(order_book_ids, date,indicator_series=None, method=Optim
         riskBudgets = assetRiskAllocation(order_book_ids, riskBudgetOptions)
         riskBudgets = riskBudgets.reindex(union_stocks).replace(np.nan,0)
         constraints = []
-        print(riskBudgets[riskBudgets>0])
         if riskbudget_riskMetrics == "volatility":
             constraints.append({"type": "ineq", "fun": lambda x: riskBudgets.dot(np.log(x)) - 13})
         else:
             assert riskbudget_riskMetrics == "tracking_error"
-            print("tracking_error_constraints")
             constraints.append({"type":"ineq","fun":lambda x:riskBudgets.dot(np.log(x-components_weights))+100})
 
     kwargs = {"covMat": objective_covMat, "benchmark": benchmark, "union_stocks": union_stocks, "date": date,
-                  "indicator_series": indicator_series,"index_weights":components_weights}
+                  "indicator_series": indicator_series,"index_weights":components_weights,"risk_aversion_coefficient":1}
     kwargs.update({"riskMetrics":riskbudget_riskMetrics})
     annualized_return = annualized_return.loc[order_book_ids].replace(np.nan,0) if annualized_return is not None else None
     kwargs.update({"annualized_return":annualized_return})
-    # kwargs.update(kwargs_var)
 
     # 对风险平价有效，是否带有约束条件
     kwargs.update({"with_cons":optimize_with_cons_or_bnds})
+    # calcTransactionCost(order_book_ids, x, date, assetsType, transactionCostOptions)
 
+    # 是否考虑 交易成本 对 优化结果的影响
+    include_transaction_cost = False
+    if transactionCostOptions is not None :
+        initialCapital = transactionCostOptions.get("initialCapital")
+        currentPositions = transactionCostOptions.get("currentPositions")
+        if (initialCapital is None and (not isinstance(currentPositions,pd.Series))):
+            raise Exception("考虑交易费用时, [initialCapital] 初始金额 [currentPositions] 当前持仓 必须指定其中之一 ")
+        else :
+            include_transaction_cost = True
+    # print(include_transaction_cost)
+    # include_transaction_cost = False
+    # 目标函数
     def _objectiveFunction(x):
-        return objectiveFunction(x, method, **kwargs)
+        if include_transaction_cost:
+            return objectiveFunction(x, method, **kwargs) - calcTransactionCost(order_book_ids,x,date,assetsType, transactionCostOptions)
+        else:
+            return objectiveFunction(x,method,**kwargs)
 
+    # Maximum number of iterations to perform and
     options = {'maxiter': max_iteration,"ftol":tol}
 
     kwargs_gradient = {"c_m":objective_covMat,"annualized_return":annualized_return}
@@ -282,21 +305,10 @@ def portfolio_optimize2(order_book_ids, date,indicator_series=None, method=Optim
         iter_method = "L-BFGS-B"
         options = {'maxiter': max_iteration}
 
-    # if method in [OptimizeMethod.MEAN_VARIANCE,
-    #               OptimizeMethod.VOLATILITY_MINIMIZATION] or risk_parity_without_cons_and_bnds:
-    #     optimization_results = minimize(_objectiveFunction, x0, bounds=bnds, jac=_get_gradient, constraints=constraints,
-    #                                     method=iter_method, options=options)
-    # else:
-    #     print("without gradient")
-    #     optimization_results = minimize(_objectiveFunction, x0, bounds=bnds,constraints=constraints,
-    #                                     method=iter_method, options=options)
-    # return optimization_results
-    print(kwargs.get("with_cons"))
     while True:
         if method in [OptimizeMethod.MEAN_VARIANCE,OptimizeMethod.VOLATILITY_MINIMIZATION] or risk_parity_without_cons_and_bnds:
             optimization_results = minimize(_objectiveFunction, x0, bounds=bnds, jac=_get_gradient,constraints=constraints, method=iter_method, options=options)
         else:
-            print("without gradient")
             optimization_results = minimize(_objectiveFunction, x0, bounds=bnds, jac=None,constraints=constraints, method=iter_method, options=options)
 
         if optimization_results.success:
@@ -307,16 +319,12 @@ def portfolio_optimize2(order_book_ids, date,indicator_series=None, method=Optim
                 # 获得未分配行业的权重与成分股权重
                 unallocatedWeight, supplementStocks = benchmark_industry_matching(order_book_ids, benchmark, date)
                 optimized_weight = pd.concat([optimized_weight * (1 - unallocatedWeight), supplementStocks])
-            print("优化完成")
-            print(optimization_results)
             return optimized_weight, optimization_results.status, subnew_stocks, suspended_stocks
         elif optimization_results.status == 8:
-            print("entering an another rounds")
             if options['ftol'] >= 1e-3:
                 raise Exception(u'OPTIMIZER: 优化无法收敛到足够精度')
             options['ftol'] *=10
         else:
-            print(optimization_results)
             raise Exception(optimization_results.message)
 
 
@@ -332,8 +340,8 @@ def min_variance_gradient(x, **kwargs):
 def mean_variance_gradient(x, **kwargs):
     c_m = kwargs.get("c_m")
     annualized_return = kwargs.get("annualized_return")
-
-    return np.asfarray(np.multiply(1, np.dot(x, c_m)).transpose()
+    risk_aversion_coefficient = kwargs.get("risk_aversion_coefficient")
+    return np.asfarray(np.multiply(risk_aversion_coefficient, np.dot(x, c_m)).transpose()
                        - annualized_return).flatten()
 
     # return np.asarray(np.dot(x, c_m)) - annualized_return
@@ -348,3 +356,115 @@ def getGradient(x,method,**kwargs):
         return min_variance_gradient(x,**kwargs)
     else:
         pass
+
+
+def calcTransactionCost(order_book_ids,x,date,assetType,transactionOptions):
+
+    transactionOptions = {s[0]: s[1] for s in transactionOptions.items() if s[1] is not None}
+
+    initialCapital = transactionOptions.get("initialCapital")
+    currentPositions = transactionOptions.get("currentPositions")
+    holdingPeriod = transactionOptions.get("holdingPeriod",21)
+    commission = transactionOptions.get("commission",True)
+    subscriptionRedemption = transactionOptions.get("subscriptionRedemption")
+    stampDuty = transactionOptions.get("stampDuty")
+    marketImpact = transactionOptions.get("marketImpact",True)
+    commissionRatio = transactionOptions.get("commissionRatio",0.0008)
+    subRedRatio = transactionOptions.get("subRedRatio",{})
+    marketImpactRatio = transactionOptions.get("marketImpactRatio",1)
+    customizedCost = transactionOptions.get("customizedCost")
+    cashPosition = transactionOptions.get("cashPosition",0)
+    output = transactionOptions.get("output")
+
+
+
+    commissionRatio = commissionRatio if commission else 0
+    marketImpactRatio = marketImpactRatio if marketImpact else 0
+
+    defaultSubRedRatio = {"Stock": (0.015, 0.005), "Bond": (0.006, 0.005),
+                   "Hybrid": (0.015, 0.005), "StockIndex": (0.015, 0.005),
+                   "BondIndex": (0.006, 0.005), "Related": (0.006, 0.005),
+                   "QDII": (0.016, 0.005), "ShortBond": (0, 0),
+                   "Money": (0, 0), "Other": (0, 0)}
+
+    subRedRatio = {} if subRedRatio is None else subRedRatio
+    defaultSubRedRatio.update(subRedRatio)
+    subRedRatio = defaultSubRedRatio if subscriptionRedemption else {}
+
+    # 获得当前持仓的最新价格
+    cash = currentPositions['cash'] if currentPositions is not None and "cash" in currentPositions.index else 0
+    holding_assets = currentPositions[~(currentPositions.index == "cash")].index.tolist() if currentPositions is not None else []
+    all_assets = sorted(set(holding_assets) | set(order_book_ids))
+    latest_price = fund.get_nav(all_assets,start_date=date,end_date=date,fields="adjusted_net_value").iloc[0] if assetType == "Fund" else get_price(all_assets,start_date=date,end_date=date,fields="close",adjust_type="pre").iloc[0]
+
+    # 获得当前持有的权益
+    market_value = (latest_price*currentPositions[~("cash" == currentPositions.index)]).replace(np.nan,0) if currentPositions is not None else latest_price*0
+    #  总权益
+    total_equity = initialCapital if currentPositions is None else market_value.sum()+cash
+    # 用户非现金权益
+
+    allocated_equity = total_equity*(1-cashPosition)
+    # 获得权益的变化
+    x = pd.Series(x,index=order_book_ids).reindex(all_assets).replace(np.nan,0)
+    x/=x.sum()
+
+    position_delta = (x*allocated_equity) - market_value
+    long_position = position_delta[position_delta>0]
+    short_position = -position_delta[position_delta<0]
+
+    customizedCost = pd.Series(0,index=all_assets) if not isinstance(customizedCost,pd.Series) else customizedCost
+
+    # 对于基金
+    if assetType == "Fund":
+        item_names = ['申赎费用', '申赎费率', '申赎份额']
+        subscription_ratios = pd.Series({s.order_book_id:subRedRatio.get(s.fund_type,(0,0))[0]for s in fund.instruments(long_position.index.tolist())})
+        redemption_ratios = pd.Series({s.order_book_id:subRedRatio.get(s.fund_type,(0,0))[1] for s in fund.instruments(short_position.index.tolist())})
+
+        # 申购时采用前端收费，外扣法计算方式
+        net_subscription_value = long_position/(1+subscription_ratios)
+        subscription_fees = long_position - net_subscription_value
+        subscription_costs = pd.concat([subscription_fees,subscription_fees/long_position,net_subscription_value/latest_price.loc[long_position.index]],axis=1)
+        subscription_costs.columns = item_names
+        subscription_costs['交易方向'] = "申购"
+
+        #  赎回费用
+        redemption_costs = pd.concat([redemption_ratios*short_position,redemption_ratios,short_position/latest_price.loc[short_position.index]],axis=1)
+        redemption_costs.columns = item_names
+        redemption_costs['交易方向'] = '赎回'
+
+        merged_data = pd.concat([subscription_costs,redemption_costs])
+        merged_data['交易金额'] = pd.concat([long_position, short_position])
+        merged_data['自定义费率'] = customizedCost.loc[all_assets].replace(np.nan,0)
+        merged_data['总费率'] = merged_data['申赎费率']+merged_data['自定义费率']
+        merged_data['自定义费用'] = merged_data['自定义费率']*merged_data['交易金额']
+
+    else:
+        assert assetType == "CS"
+        # 对于股票
+        data = get_price(all_assets,pd.Timestamp(date)-np.timedelta64(400,"D"),date,fields=["close",'volume'],adjust_type="pre").iloc[-253:]
+        close_price = data['close']
+        volume = data['volume']
+        daily_volatility = close_price.pct_change().dropna(how="all").std()
+        avg_volume = volume.iloc[-5:].mean()
+
+        positions = pd.concat([short_position,long_position])
+        positions.name = "交易金额"
+
+        sides = pd.Series(["卖" if s in short_position.index else "买" for s in all_assets],index=all_assets)
+        amounts = positions/latest_price
+
+        clearing_time = amounts / avg_volume
+        impact_cost = marketImpactRatio * daily_volatility * clearing_time**(1/2)
+        stamp_duty_cost = pd.Series([0.001 if stampDuty and s in short_position.index  else 0 for s in all_assets],index=all_assets)
+
+        commission = pd.Series([commissionRatio]*len(all_assets),index=all_assets)
+
+        merged_data = pd.DataFrame({"交易股数":amounts,"交易金额":positions,"印花税费率":stamp_duty_cost,"佣金费率":commission,"市场冲击成本":impact_cost,"出清时间（天）":clearing_time,"交易方向":sides,"自定义费率":customizedCost.loc[all_assets].replace(np.nan,0)})
+        merged_data['总交易费率'] = commission+impact_cost+merged_data['自定义费率']+stamp_duty_cost
+    if output:
+        return merged_data
+    else:
+        if assetType == "CS":
+            return merged_data['总交易费率'].dot(merged_data['交易金额'])*(252/holdingPeriod)/merged_data['交易金额'].sum()
+        else:
+            return merged_data['交易金额'].dot(merged_data['总费率'])*(252/holdingPeriod)/merged_data['交易金额'].sum()
