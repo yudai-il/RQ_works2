@@ -16,7 +16,7 @@ class OptimizeMethod(Enum):
 def objectiveFunction(x, function, **kwargs):
     return function(x, **kwargs)
 
-def constraintsGeneration(order_book_ids,assetsType, union_stocks, benchmark, date, bounds, industryConstraints, industryNeutral,
+def constraintsGeneration(order_book_ids,assetsType, union_stocks, benchmark, date, bounds,active_bounds, industryConstraints, industryNeutral,
                           industryDeviation, styleConstraints, styleNeutral, styleDeviation,fundTypeConstraints):
 
     if "*" in bounds.keys():
@@ -27,6 +27,7 @@ def constraintsGeneration(order_book_ids,assetsType, union_stocks, benchmark, da
     not_weighted_stocks = set(union_stocks) - set(order_book_ids)
     bnds1 = {s: (0, 0) for s in not_weighted_stocks}
     bounds.update(bnds1)
+    bounds.update(active_bounds)
     bounds = {s:bounds.get(s) if s in bounds else (0, 1) for s in union_stocks}
     bnds = tuple([bounds.get(s) for s in union_stocks])
 
@@ -115,10 +116,23 @@ def assetRiskAllocation(order_book_ids,riskBudgetOptions):
 MIN_OPTIMIZE_DATE = datetime.datetime(2005, 7, 1)
 MIN_OPTIMIZE_DATE_STR = '2005-07-01'
 
+# [format_active_bounds_to_general_bounds]
+# 将主动权重转换成标准权重上下限
+# 对于基准权重不为0的股票，其权重就是主动权重
+# 对于未定义主动权重的，默认上下限(0,1)
+def format_active_bounds_to_general_bounds(order_book_ids,components_weights,active_bounds):
+
+    active_bounds = {s:active_bounds.get("*") for s in order_book_ids} if "*" in active_bounds else active_bounds
+    active_bounds = {k:(l+components_weights.get(k),u+components_weights.get(k)) if k in components_weights.index else (l,u) for k,(l,u) in active_bounds.items()}
+    _bounds = {s:active_bounds.get(s) if s in active_bounds else (0,1) for s in order_book_ids}
+
+    return {k:(max(l,0),min(u,1)) for k,(l,u) in _bounds.items()}
+
+
 def portfolio_optimize(order_book_ids, date,indicator_series=None, method=OptimizeMethod.VOLATILITY_MINIMIZATION, cov_estimator="empirical",
-                            annualized_return = None,fundTypeConstraints = None,
+                            annualized_return = None,fundTypeConstraints = None,returnRiskRatio = None,
+                           window=126, bounds=None,active_bounds = None, industryConstraints=None, styleConstraints=None,
                             max_iteration = 1000,tol = 1e-8,quiet = False,
-                           window=126, bounds=None, industryConstraints=None, styleConstraints=None,
                            benchmarkOptions=None,riskBudegtOptions=None,transactionCostOptions=None):
     """
     :param order_book_ids:股票列表
@@ -129,11 +143,16 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
                 -"shrinkage" 默认值; 对收益的协方差矩阵进行收缩矩阵
                 -"empirical" 计算个股收益的经验协方差矩阵
                 -"multifactor" 因子协方差矩阵
-    :param annualized_return: 预期年化收益，拥护
+    :param annualized_return: 预期年化收益,用于均值方差模型
+    :param fundTypeConstraints: 基金约束
+    :param returnRiskRatio：均值方差中收益和风险的偏好比例 tuple(0.7,0.3)
+    :param max_iteration:优化器最大迭代次数
+    :param tol: 优化终止的变化步长
     :param window: int 计算收益率协方差矩阵时的回溯交易日数目 默认为126
     :param bounds: dict 个股头寸的上下限
                         1、{'*': (0, 0.03)},则所有个股仓位都在0-3%之间;
                         2、{'601099.XSHG':(0,0.3),'601216.XSHG':(0,0.4)},则601099的仓位在0-30%，601216的仓位在0-40%之间
+    :param active_bounds: 在目标函数为最小化跟踪误差时的 主动权重上下限，格式与bounds形式一样
     :param industryConstraints:dict 行业的权重上下限
                         1、{'*': (0, 0.03)},则所有行业权重都在0-3%之间;
                         2、{'银行':(0,0.3),'房地产':(0,0.4)},则银行行业的权重在0-30%，房地产行业的权重在0-40%之间
@@ -184,8 +203,8 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
     industryMatching = benchmarkOptions.get("industryMatching")
 
     riskBudgetOptions = {} if riskBudegtOptions is None else riskBudegtOptions
-
     bounds = {} if bounds is None else bounds
+    active_bounds = {} if active_bounds is None else active_bounds
     industryConstraints = {} if industryConstraints is None else industryConstraints
     styleConstraints = {} if styleConstraints is None else styleConstraints
 
@@ -213,12 +232,17 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
             warnings.warn("OPTIMIZER:{}上市时间过短,被剔除".format(subnew_stocks))
 
     if len(order_book_ids)<=2:
-        raise Exception("OPTIMIZER: 经过剔除后，合约数目不足2个")
+        raise InvalidArgument("OPTIMIZER: 经过剔除后，合约数目不足2个")
+    components_weights = index_weights(benchmark, date).reindex(union_stocks).replace(np.nan,
+                                                                                      0) if benchmark is not None else None
+    active_bounds = format_active_bounds_to_general_bounds(order_book_ids, components_weights, active_bounds)
+
     bnds, constraints = constraintsGeneration(order_book_ids=order_book_ids,assetsType=assetsType, union_stocks=union_stocks,
-                                              benchmark=benchmark, date=date, bounds=bounds,
+                                              benchmark=benchmark, date=date, bounds=bounds,active_bounds = active_bounds,
                                               industryConstraints=industryConstraints, industryNeutral=industryNeutral,
                                               industryDeviation=industryDeviation, styleConstraints=styleConstraints,
                                               styleNeutral=styleNeutral, styleDeviation=styleDeviation,fundTypeConstraints=fundTypeConstraints)
+
 
     # 对于风险平价，将bounds进行该写避免log报错 1e-6
     optimize_with_cons_or_bnds = (len(constraints)>1 or len(bounds)>0)
@@ -239,16 +263,22 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
 
     x0 = (pd.Series(1, index=order_book_ids) / len(order_book_ids)).reindex(union_stocks).replace(np.nan, 0).values
 
-    components_weights = index_weights(benchmark,date).reindex(union_stocks).replace(np.nan, 0).values if benchmark is not None else None
+
 
     if isinstance(trackingErrorThreshold,float):
         constraints_covMat = covarianceEstimation(daily_returns=daily_returns,
                                                   cov_estimator=cov_estimator_benchmarkOptions)
 
-        trackingErrorOptions = {"covMat": constraints_covMat, "union_stocks": union_stocks,"index_weights":components_weights}
+        trackingErrorOptions = {"covMat": constraints_covMat, "union_stocks": union_stocks,"index_weights":components_weights.values}
         constraints.append({"type": "ineq", "fun": lambda x: -trackingError(x,**trackingErrorOptions) + trackingErrorThreshold})
 
     riskbudget_riskMetrics = riskBudgetOptions.get("riskMetrics", "volatility")
+
+    annualized_return = annualized_return.loc[order_book_ids].replace(np.nan,0) if annualized_return is not None else None
+
+    kwargs = {"covMat": objective_covMat, "benchmark": benchmark, "union_stocks": union_stocks, "date": date,
+                  "indicator_series": indicator_series,"index_weights":components_weights.values,
+              "riskMetrics":riskbudget_riskMetrics,"annualized_return":annualized_return}
 
     if method is OptimizeMethod.RISK_BUDGETING:
         riskBudgetOptions.update({"assetsType":assetsType})
@@ -259,17 +289,16 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
             constraints.append({"type": "ineq", "fun": lambda x: riskBudgets.dot(np.log(x)) - 13})
         else:
             assert riskbudget_riskMetrics == "tracking_error"
-            constraints.append({"type":"ineq","fun":lambda x:riskBudgets.dot(np.log(x-components_weights))+100})
+            kwargs["riskBudgets"] = riskBudgets
 
-    kwargs = {"covMat": objective_covMat, "benchmark": benchmark, "union_stocks": union_stocks, "date": date,
-                  "indicator_series": indicator_series,"index_weights":components_weights,"risk_aversion_coefficient":1}
-    kwargs.update({"riskMetrics":riskbudget_riskMetrics})
-    annualized_return = annualized_return.loc[order_book_ids].replace(np.nan,0) if annualized_return is not None else None
-    kwargs.update({"annualized_return":annualized_return})
+    if method is OptimizeMethod.MEAN_VARIANCE:
+
+        returnRiskRatio = returnRiskRatio[0]/returnRiskRatio[1]
+        risk_aversion_coefficient = (x0.dot(annualized_return))/(volatility(x0,**kwargs)*returnRiskRatio)
+        kwargs.update({"risk_aversion_coefficient":risk_aversion_coefficient})
 
     # 对风险平价有效，是否带有约束条件
     kwargs.update({"with_cons":optimize_with_cons_or_bnds})
-    # calcTransactionCost(order_book_ids, x, date, assetsType, transactionCostOptions)
 
     # 是否考虑 交易成本 对 优化结果的影响
     include_transaction_cost = False
@@ -282,6 +311,7 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
             include_transaction_cost = True
     # print(include_transaction_cost)
     # include_transaction_cost = False
+
     # 目标函数
     def _objectiveFunction(x):
         if include_transaction_cost:
@@ -291,7 +321,6 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
 
     # Maximum number of iterations to perform and
     options = {'maxiter': max_iteration,"ftol":tol}
-
     kwargs_gradient = {"c_m":objective_covMat,"annualized_return":annualized_return}
 
     def _get_gradient(x):
@@ -304,9 +333,11 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
         constraints = None
         iter_method = "L-BFGS-B"
         options = {'maxiter': max_iteration}
+    if (method is OptimizeMethod.RISK_BUDGETING and riskbudget_riskMetrics == "tracking_error") or method is OptimizeMethod.MEAN_VARIANCE:
+        options = {'maxiter': max_iteration}
 
     while True:
-        if method in [OptimizeMethod.MEAN_VARIANCE,OptimizeMethod.VOLATILITY_MINIMIZATION] or risk_parity_without_cons_and_bnds:
+        if method in [OptimizeMethod.VOLATILITY_MINIMIZATION] or risk_parity_without_cons_and_bnds:
             optimization_results = minimize(_objectiveFunction, x0, bounds=bnds, jac=_get_gradient,constraints=constraints, method=iter_method, options=options)
         else:
             optimization_results = minimize(_objectiveFunction, x0, bounds=bnds, jac=None,constraints=constraints, method=iter_method, options=options)
@@ -341,17 +372,16 @@ def mean_variance_gradient(x, **kwargs):
     c_m = kwargs.get("c_m")
     annualized_return = kwargs.get("annualized_return")
     risk_aversion_coefficient = kwargs.get("risk_aversion_coefficient")
-    return np.asfarray(np.multiply(risk_aversion_coefficient, np.dot(x, c_m)).transpose()
+    return np.asfarray(np.multiply(2*risk_aversion_coefficient, np.dot(x, c_m)).transpose()
                        - annualized_return).flatten()
 
-    # return np.asarray(np.dot(x, c_m)) - annualized_return
 
 def getGradient(x,method,**kwargs):
 
     if method is OptimizeMethod.RISK_PARITY:
         return risk_parity_gradient(x,**kwargs)
-    elif method is OptimizeMethod.MEAN_VARIANCE:
-        return mean_variance_gradient(x,**kwargs)
+    # elif method is OptimizeMethod.MEAN_VARIANCE:
+    #     return mean_variance_gradient(x,**kwargs)
     elif method is OptimizeMethod.VOLATILITY_MINIMIZATION:
         return min_variance_gradient(x,**kwargs)
     else:
