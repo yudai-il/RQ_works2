@@ -1,6 +1,5 @@
 ## RQ_works2
-<li>imformationCoefficient_calculation</li>
-  <ul>关于季度的秩相关系数计算</ul>
-<li>marketAnalyser</li>
-  <ul>行情分析(行业)</ul>
+<li>优化器</li>
+<li>因子分析2</li>
+<li>交易分析</li>
  
