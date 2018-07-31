@@ -104,8 +104,7 @@ def trackingError(x,**kwargs):
     :param covMat: 协方差矩阵
     :return: float
     """
-    union_stocks, covMat,_index_weights = kwargs.get("union_stocks"),kwargs.get("covMat"),kwargs.get("index_weights")
-    # vector of deviations
+    covMat,_index_weights = kwargs.get("covMat"),kwargs.get("index_weights")
     X = x - _index_weights
     result = np.sqrt(np.dot(np.dot(X, covMat * 252),X))
     return result
@@ -128,7 +127,8 @@ def mean_variance(x,**kwargs):
     if not isinstance(annualized_return,pd.Series):
         raise Exception("在均值方差优化中请指定 预期收益")
     portfolio_volatility = volatility(x,**kwargs)
-    return -x.dot(annualized_return) + np.multiply(risk_aversion_coefficient/2,portfolio_volatility)
+
+    return -x.dot(annualized_return) + np.multiply(risk_aversion_coefficient,portfolio_volatility)
 
 def maximizing_return(x,**kwargs):
     annualized_return = kwargs.get("annualized_return")
@@ -145,7 +145,16 @@ def risk_budgeting(x,**kwargs):
         return np.sqrt(volatility(x, **kwargs))
     else:
         assert riskMetrics == "tracking_error"
-        return trackingError(x,**kwargs)
+        riskBudgets = kwargs.get("riskBudgets").values
+        c_m, _index_weights = kwargs.get("covMat"), kwargs.get("index_weights")
+        X = x - _index_weights
+        total_tracking_error = trackingError(x,**kwargs)
+        contribution_to_active_risk = np.multiply(X,np.dot(c_m,X))/total_tracking_error
+        c = np.vstack([contribution_to_active_risk,riskBudgets])
+        res = sum(scsp.distance.pdist(c))
+        return res
+
+
 
 def risk_parity(x,**kwargs):
 
@@ -339,7 +348,7 @@ def style_customized_constraint(order_book_ids,styleConstraints,date):
         styleConstraints = {s:styleConstraints.get("*") for s in constrainedStyle}
     else:
         constrainedStyle = sorted(set(styleConstraints.keys())&set(constrainedStyle))
-    style_factor_exposure = get_style_factor_exposure(order_book_ids,date,date,'all')
+    style_factor_exposure = get_style_factor_exposure(order_book_ids,date,date,'all').xs(date,level=1)
 
     constraints = []
 
@@ -397,22 +406,25 @@ def style_neutralize_constraint(order_book_ids,date,deviation,factors,benchmark)
 
 
 def missing_industryLabel_handler(order_book_ids,date):
-    industry = shenwan_instrument_industry(order_book_ids,date=date)['index_name'].reindex(order_book_ids)
-    missing_stocks = industry[industry.isnull()].index.tolist()
 
-    if len(missing_stocks):
-        min_date = pd.to_datetime([instruments(s).listed_date for s in missing_stocks]).min()
-        supplemented_data = {}
-        for i in range(1,6,1):
-            datePoint = (min_date+np.timedelta64(i*22,"D")).date()
-            # if datePoint
-            industryLabels = shenwan_instrument_industry(missing_stocks,datePoint)['index_name']
-            supplemented_data.update(industryLabels.to_dict())
-            missing_stocks = sorted(set(missing_stocks) - set(industryLabels.index))
-            if len(missing_stocks) == 0:
-                break
-        industry.loc[supplemented_data.keys()] = pd.Series(supplemented_data)
-    return industry
+    return shenwan_instrument_industry(order_book_ids, date=date)['index_name']
+
+    # industry = shenwan_instrument_industry(order_book_ids,date=date)['index_name'].reindex(order_book_ids)
+    # missing_stocks = industry[industry.isnull()].index.tolist()
+    #
+    # if len(missing_stocks):
+    #     min_date = pd.to_datetime([instruments(s).listed_date for s in missing_stocks]).min()
+    #     supplemented_data = {}
+    #     for i in range(1,6,1):
+    #         datePoint = (min_date+np.timedelta64(i*22,"D")).date()
+    #         # if datePoint
+    #         industryLabels = shenwan_instrument_industry(missing_stocks,datePoint)['index_name']
+    #         supplemented_data.update(industryLabels.to_dict())
+    #         missing_stocks = sorted(set(missing_stocks) - set(industryLabels.index))
+    #         if len(missing_stocks) == 0:
+    #             break
+    #     industry.loc[supplemented_data.keys()] = pd.Series(supplemented_data)
+    # return industry
 
 # 2018-07-09 calculating var and cvar
 
