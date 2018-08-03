@@ -9,7 +9,7 @@ from scipy.stats import norm
 import scipy.spatial as scsp
 from.exception import *
 
-def get_subnew_assets(order_book_ids,date,N,type="CS"):
+def get_subnew_delisted_assets(order_book_ids,date,N,type="CS"):
     """
     # 获得某日上市小于N天的次新股
     :param stocks: list 股票列表
@@ -17,10 +17,13 @@ def get_subnew_assets(order_book_ids,date,N,type="CS"):
     :param N: int 次新股过滤的阈值
     :return: list 列表中的次新股
     """
-    if type == "CS":
-        return [s for s in order_book_ids if len(get_trading_dates(instruments(s).listed_date,date))<=N]
-    elif type == "Fund":
-        return [s for s in order_book_ids if len(get_trading_dates(fund.instruments(s).listed_date, date)) <= N]
+
+    instruments_fun = fund.instruments if type == "Fund" else instruments
+    all_detail_instruments = instruments_fun(order_book_ids)
+    subnew_assets = [s for s in all_detail_instruments if len(get_trading_dates(s.listed_date,date))<=N] if isinstance(N,int) else []
+    delisted_assets = [s for s in all_detail_instruments if (not s.de_listed_date =="0000-00-00") and pd.Timestamp(s.de_listed_date)<pd.Timestamp(date)]
+
+    return subnew_assets,delisted_assets
 
 def get_st_stocks(stocks,date):
     """
@@ -40,46 +43,46 @@ def get_suspended_stocks(stocks,end_date,N):
     :param start_date: 交易日
     :return: list 列表中的停牌股
     """
-    start_date = pd.Timestamp(end_date) - np.timedelta64(N * 2, "D")
-    return [s for s in stocks if True in is_suspended(s,start_date,end_date).values.flatten()[-N:]]
+    start_date = rqdatac.trading_date_offset(end_date,-N)
+    volume = get_price(stocks, start_date, end_date, fields="volume")
+    suspended_day = (volume == 0).sum(axis=0)
+    return suspended_day[suspended_day>0].index.tolist()
 
-def winsorized_std(rawData, n=3):
-    """
-    进行数据的剔除异常值处理
-    :param rawData: pandas.Series 未处理的数据
-    :param n: 标准化去极值的阈值
-    :return: pandas.Series 标准化去极值后的数据
-    """
-    mean, std = rawData.mean(), rawData.std()
-    return rawData.clip(mean - std * n, mean + std * n)
+def assetsListHandler(filter,**kwargs):
 
-def assetsListHandler(**kwargs):
+    st_filter = filter.get("st_filter")
+
     benchmark = kwargs.get("benchmark")
     date = kwargs.get("date")
     order_book_ids = kwargs.get("order_book_ids")
-    window = kwargs.get("window")
+    # window = kwargs.get("window")
+    window = subnew_filter = filter.get("subnew_filter")
+
     assetsType = kwargs.get("assetsType")
 
     if assetsType == "CS":
 
         benchmark_components = index_components(benchmark, date=date) if benchmark is not None else []
         union_stocks = sorted(set(benchmark_components).union(set(order_book_ids)))
+        st_stocks = get_st_stocks(union_stocks,date) if st_filter else []
 
-        subnew_stocks = get_subnew_assets(union_stocks, date, window)
-        suspended_stocks = get_suspended_stocks(union_stocks, date, window)
-        union_stocks = sorted(set(union_stocks) - set(subnew_stocks) - set(suspended_stocks))
+        subnew_stocks,delisted_stocks = get_subnew_delisted_assets(union_stocks, date, window)
+        suspended_stocks = get_suspended_stocks(union_stocks,date,window)
+        union_stocks = sorted(set(union_stocks) - set(subnew_stocks) - set(delisted_stocks) - set(st_stocks) - set(suspended_stocks))
 
-        subnew_stocks = set(subnew_stocks)&set(order_book_ids)
-        suspended_stocks = set(suspended_stocks)&set(order_book_ids)
+        subnew_stocks = list(set(subnew_stocks)&set(order_book_ids))
+        delisted_stocks = list(set(delisted_stocks)&set(order_book_ids))
+        st_stocks = list(set(st_stocks)&set(order_book_ids))
+        suspended_stocks = list(set(suspended_stocks)&set(order_book_ids))
 
         order_book_ids = sorted(set(union_stocks)&set(order_book_ids))
 
-        return order_book_ids,union_stocks,suspended_stocks,subnew_stocks
+        return order_book_ids,union_stocks,subnew_stocks,delisted_stocks,suspended_stocks,st_stocks
     else:
         assert assetsType == "Fund"
-        subnew_funds = get_subnew_assets(order_book_ids, date, window,type="Fund")
-        order_book_ids = sorted(set(order_book_ids)-set(subnew_funds))
-        return order_book_ids,order_book_ids,[],subnew_funds
+        subnew_funds,delisted_funds = get_subnew_delisted_assets(order_book_ids, date, window,type="Fund")
+        order_book_ids = sorted(set(order_book_ids)-set(subnew_funds)-set(delisted_funds))
+        return order_book_ids,order_book_ids,subnew_funds,delisted_funds
 
 def assetsDistinguish(order_book_ids):
     stocksInstruments = instruments(order_book_ids)
@@ -130,13 +133,8 @@ def mean_variance(x,**kwargs):
 
     return -x.dot(annualized_return) + np.multiply(risk_aversion_coefficient,portfolio_volatility)
 
-def maximizing_return(x,**kwargs):
-    annualized_return = kwargs.get("annualized_return")
-    return -x.dot(annualized_return)
-
-
-def maximizing_indicator(x,**kwargs):
-    indicator_series = kwargs.get("indicator_series")
+def maximizing_series(x,**kwargs):
+    indicator_series = kwargs.get("series")
     return -x.dot(indicator_series)
 
 def risk_budgeting(x,**kwargs):
@@ -153,8 +151,6 @@ def risk_budgeting(x,**kwargs):
         c = np.vstack([contribution_to_active_risk,riskBudgets])
         res = sum(scsp.distance.pdist(c))
         return res
-
-
 
 def risk_parity(x,**kwargs):
 
@@ -204,10 +200,11 @@ def industry_customized_constraint(order_book_ids,industryConstraints,date):
 def industry_neutralize_constraint(order_book_ids, date,deviation,industryNeutral, benchmark):
     """
     返回相对基准申万1级行业有偏离上下界的约束条件
-    :param order_book_ids: list
-    :param date: string
-    :param benchmark: string
-    :param deviation: tuple
+    :param order_book_ids: list 股票列表
+    :param date: string 日期
+    :param benchmark: string 基准指数
+    :param deviation: tuple 偏离上下限
+    :param industryNeutral: 受约束的行业列表
     :return:
     """
     if industryNeutral is None or deviation is None:
@@ -363,8 +360,8 @@ def style_neutralize_constraint(order_book_ids,date,deviation,factors,benchmark)
     """
     :param order_book_ids:  股票列表
     :param date: 日期,交易日
-    :param deviation: 偏离
-    :param factors: 因子
+    :param deviation: 偏离上下限
+    :param factors: 受约束的因子列表
     :param benchmark: 基准
     :return:
     """
