@@ -5,8 +5,8 @@ from enum import Enum
 import datetime
 
 class OptimizeMethod(Enum):
-    INDICATOR_MAXIMIZATION = maximizing_indicator
-    RETURN_MAXIMIZATION = maximizing_return
+    INDICATOR_MAXIMIZATION = maximizing_series
+    RETURN_MAXIMIZATION = maximizing_series
     VOLATILITY_MINIMIZATION = volatility
     TRACKING_ERROR_MINIMIZATION = trackingError
     MEAN_VARIANCE = mean_variance
@@ -132,7 +132,7 @@ def format_active_bounds_to_general_bounds(order_book_ids,components_weights,act
 def portfolio_optimize(order_book_ids, date,indicator_series=None, method=OptimizeMethod.VOLATILITY_MINIMIZATION, cov_estimator="empirical",
                             annualized_return = None,fundTypeConstraints = None,returnRiskRatio = None,
                            window=126, bounds=None,active_bounds = None, industryConstraints=None, styleConstraints=None,
-                            max_iteration = 1000,tol = 1e-8,quiet = False,
+                            max_iteration = 1000,tol = 1e-8,quiet = False,filter=None,
                            benchmarkOptions=None,riskBudegtOptions=None,transactionCostOptions=None):
     """
     :param order_book_ids:股票列表
@@ -204,9 +204,14 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
 
     riskBudgetOptions = {} if riskBudegtOptions is None else riskBudegtOptions
     bounds = {} if bounds is None else bounds
+    filter = {} if filter is None or not isinstance(filter,dict) else filter
     active_bounds = {} if active_bounds is None else active_bounds
     industryConstraints = {} if industryConstraints is None else industryConstraints
     styleConstraints = {} if styleConstraints is None else styleConstraints
+
+    default_filter = {"suspend_filter":True,"subnew_filter":window,"st_filter":False}
+    default_filter.update(filter)
+    filter = default_filter
 
     if isinstance(date,str) and date <MIN_OPTIMIZE_DATE_STR or (isinstance(date,datetime.datetime)) and date <MIN_OPTIMIZE_DATE:
         raise Exception("日期不能早于2005-07-01（之前没有足够的数据）")
@@ -219,22 +224,30 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
         raise Exception("OPTIMIZER: [基金] 不支持 包含跟踪误差 约束 的权重优化 ")
     if (not isinstance(annualized_return,pd.Series)) and (method is OptimizeMethod.MEAN_VARIANCE or method is OptimizeMethod.RETURN_MAXIMIZATION):
         raise Exception("OPTIMIZER: 均值方差和预期收益最大化时需要指定 annualized_return [预期年化收益]")
+    if not ((method is OptimizeMethod.RETURN_MAXIMIZATION or method is OptimizeMethod.INDICATOR_MAXIMIZATION) and benchmarkOptions.get("trackingErrorThreshold") is None):
+        if not filter.get("suspend_filter"):
+            raise Exception("此优化器涉及协方差矩阵计算，为避免空值对优化器的影响，请过滤停牌股票，将[suspend_filter]置为True")
+        if not (isinstance(filter.get("subnew_filter"),int) and filter.get("subnew_filter")>=window):
+            raise InvalidArgument("此优化器涉及协方差矩阵计算，为避免空值对优化器的影响，请过滤次新股，将[subnew_filter]设为>=window的整数")
 
-    order_book_ids, union_stocks, suspended_stocks, subnew_stocks = assetsListHandler(date=date,
-                                                                                      order_book_ids=order_book_ids,
-                                                                                      window=window,
-                                                                                      benchmark=_benchmark,assetsType=assetsType)
+    order_book_ids, union_stocks, subnew_stocks,delisted_stocks,suspended_stocks,st_stocks = assetsListHandler(filter,date=date,order_book_ids=order_book_ids,window=window,benchmark=_benchmark,assetsType=assetsType)
+
+    start_date = trading_date_offset(date,-window-1)
+    if assetsType == 'CS':
+        daily_returns = get_price(union_stocks, start_date, date, fields="close").pct_change().dropna(how='all').iloc[-window:]
+    else:
+        assert assetsType == "Fund"
+        daily_returns = fund.get_nav(order_book_ids,start_date,date,fields="acc_net_value").pct_change().dropna(how="all").iloc[-window:]
 
     if not quiet:
         if len(suspended_stocks) > 0:
-            warnings.warn("OPTIMIZER:在回溯{}天出现停牌{}的股票已被剔除".format(window,suspended_stocks))
+            warnings.warn("OPTIMIZER:已剔除停牌股票：{}".format(suspended_stocks))
         if len(subnew_stocks)>0:
-            warnings.warn("OPTIMIZER:{}上市时间过短,被剔除".format(subnew_stocks))
+            warnings.warn("OPTIMIZER:已剔除次新股：{}".format(subnew_stocks))
 
     if len(order_book_ids)<=2:
         raise InvalidArgument("OPTIMIZER: 经过剔除后，合约数目不足2个")
-    components_weights = index_weights(benchmark, date).reindex(union_stocks).replace(np.nan,
-                                                                                      0) if benchmark is not None else None
+    components_weights = index_weights(benchmark, date).reindex(union_stocks).replace(np.nan,0) if benchmark is not None else None
     active_bounds = format_active_bounds_to_general_bounds(order_book_ids, components_weights, active_bounds)
 
     bnds, constraints = constraintsGeneration(order_book_ids=order_book_ids,assetsType=assetsType, union_stocks=union_stocks,
@@ -243,7 +256,6 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
                                               industryDeviation=industryDeviation, styleConstraints=styleConstraints,
                                               styleNeutral=styleNeutral, styleDeviation=styleDeviation,fundTypeConstraints=fundTypeConstraints)
 
-
     # 对于风险平价，将bounds进行该写避免log报错 1e-6
     optimize_with_cons_or_bnds = (len(constraints)>1 or len(bounds)>0)
     risk_parity_without_cons_and_bnds = (not optimize_with_cons_or_bnds) and method is OptimizeMethod.RISK_PARITY
@@ -251,19 +263,10 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
     if method is OptimizeMethod.RISK_BUDGETING or risk_parity_without_cons_and_bnds:
         bnds = tuple([(1e-6,None) if _bnds[0] == 0 else _bnds for _bnds in bnds])
 
-    start_date = pd.Timestamp(date) - np.timedelta64(window * 2, "D")
-    if assetsType == 'CS':
-        daily_returns = get_price(union_stocks, start_date, date, fields="close").pct_change().dropna(how='all').iloc[-window:]
-    else:
-        assert assetsType == "Fund"
-        daily_returns = fund.get_nav(order_book_ids,start_date,date,fields="acc_net_value").pct_change().dropna(how="all").iloc[-window:]
-
     # 目标函数 中包括 tracking—error的情况, 1、目标函数是跟踪误差最小化；2、风险预算，根据跟踪误差进行风险分配
     objective_covMat = covarianceEstimation(daily_returns=daily_returns,cov_estimator=cov_estimator) if method is OptimizeMethod.TRACKING_ERROR_MINIMIZATION or riskBudgetOptions.get("riskMetrics") == "tracking_error"  else covarianceEstimation(daily_returns=daily_returns[order_book_ids],cov_estimator=cov_estimator)
 
     x0 = (pd.Series(1, index=order_book_ids) / len(order_book_ids)).reindex(union_stocks).replace(np.nan, 0).values
-
-
 
     if isinstance(trackingErrorThreshold,float):
         constraints_covMat = covarianceEstimation(daily_returns=daily_returns,
@@ -275,6 +278,7 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
     riskbudget_riskMetrics = riskBudgetOptions.get("riskMetrics", "volatility")
 
     annualized_return = annualized_return.loc[order_book_ids].replace(np.nan,0) if annualized_return is not None else None
+
 
     kwargs = {"covMat": objective_covMat, "benchmark": benchmark, "union_stocks": union_stocks, "date": date,
                   "indicator_series": indicator_series,"index_weights":components_weights.values,
@@ -350,7 +354,7 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
                 # 获得未分配行业的权重与成分股权重
                 unallocatedWeight, supplementStocks = benchmark_industry_matching(order_book_ids, benchmark, date)
                 optimized_weight = pd.concat([optimized_weight * (1 - unallocatedWeight), supplementStocks])
-            return optimized_weight, optimization_results.status, subnew_stocks, suspended_stocks
+            return optimized_weight,{"次新股":subnew_stocks, "停牌股":suspended_stocks,"ST类股票":st_stocks,"退市股票":delisted_stocks}
         elif optimization_results.status == 8:
             if options['ftol'] >= 1e-3:
                 raise Exception(u'OPTIMIZER: 优化无法收敛到足够精度')
@@ -380,8 +384,8 @@ def getGradient(x,method,**kwargs):
 
     if method is OptimizeMethod.RISK_PARITY:
         return risk_parity_gradient(x,**kwargs)
-    # elif method is OptimizeMethod.MEAN_VARIANCE:
-    #     return mean_variance_gradient(x,**kwargs)
+    elif method is OptimizeMethod.MEAN_VARIANCE:
+        return mean_variance_gradient(x,**kwargs)
     elif method is OptimizeMethod.VOLATILITY_MINIMIZATION:
         return min_variance_gradient(x,**kwargs)
     else:
