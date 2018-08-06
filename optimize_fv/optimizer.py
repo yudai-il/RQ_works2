@@ -91,7 +91,7 @@ class ShenWanConstraint:
         shenwan_data['values'] = 1
 
         dummy_variables = shenwan_data.pivot(columns="index_name",index="index",values="values").replace(np.nan,0)
-        return _to_constraint2(dummy_variables,self._rules)
+        return _to_constraint2(dummy_variables,self._rules),set(order_book_ids)-set(dummy_variables.index.tolist())
 
 class StyleConstraints:
     def __init__(self,rules):
@@ -146,7 +146,7 @@ def constraintsGeneration(**kwargs):
         if (industryNeutral is None) ^ (industryDeviation is None):
             raise InvalidArgument("在行业偏离度约束中必须同时指定[industryNeutral,industryDeviation]")
         elif industryNeutral is not None:
-            lower_industry_deviation,upper_industry_deviation = industryDeviation[0],industryDeviation[1]
+            lower_industry_deviation = upper_industry_deviation = industryDeviation
             industry_weights = pd.concat([components_weights,industry_labels],axis=1).groupby("index_name").sum().loc[industryNeutral]['weight']
             industry_deviation_rules = {s:(industry_weights[s]*(1-lower_industry_deviation),industry_weights[s]*(1+upper_industry_deviation)) for s in industry_weights.index}
         else:
@@ -155,9 +155,9 @@ def constraintsGeneration(**kwargs):
         if (styleNeutral is None) ^ (styleDeviation is None):
             raise InvalidArgument("在风格偏离度约束中必须同时指定[styleNeutral,styleDeviation]")
         elif styleNeutral is not None:
-            lower_style_deviation,upper_style_deviation = styleDeviation[0],styleDeviation[1]
+            lower_style_deviation = upper_style_deviation = styleDeviation
             style_weights = components_weights.dot(get_style_factor_exposure(components_weights.index.tolist(), date, date).xs(date, level=1))[styleNeutral].dropna()
-            style_deviation_rules = {s:(style_weights[s]*(1-lower_style_deviation),style_weights[s]*(1+upper_style_deviation)) for s in style_weights.index}
+            style_deviation_rules = {s:(style_weights[s]*(1-lower_style_deviation),style_weights[s]*(1+upper_style_deviation)) if style_weights[s]>0 else(style_weights[s]*(1+lower_style_deviation),style_weights[s]*(1-upper_style_deviation)) for s in style_weights.index}
         else:
             style_deviation_rules = {}
 
@@ -167,7 +167,7 @@ def constraintsGeneration(**kwargs):
         industry_constraints = []
         if len(industryConstraints)>0:
             indusrty_cons = ShenWanConstraint(industryConstraints)
-            industry_constraints = indusrty_cons.to_constraint(order_book_ids,date)
+            industry_constraints,null_lists = indusrty_cons.to_constraint(order_book_ids,date)
 
         style_constraints = []
         if len(styleConstraints)>0:
@@ -179,12 +179,11 @@ def constraintsGeneration(**kwargs):
 
     else:
         assert assetsType == "Fund"
-
         fund_constraints = FundTypeConstraint(fundTypeConstraints)
         fund_constraints.to_constraint(order_book_ids,date)
         constraints.extend(fund_constraints)
 
-    return constraints
+    return constraints,null_lists
 
 def boundsGeneration(**kwargs):
     union_stocks = kwargs.get("union_stocks")
@@ -225,9 +224,9 @@ def boundsGeneration(**kwargs):
 def format_active_bounds_to_general_bounds(order_book_ids,components_weights,active_bounds):
 
     active_bounds = {s:active_bounds.get("*") for s in order_book_ids} if "*" in active_bounds else active_bounds
-    active_bounds = {k:(components_weights.get(k)*(1-l),components_weights.get(k)*(1+u)) if k in components_weights.index else (l,u) for k,(l,u) in active_bounds.items()}
+    active_bounds = {k:(components_weights.get(k)*(1-l),components_weights.get(k)*(1+u)) if k in components_weights.index else (0,1) for k,(l,u) in active_bounds.items()}
+    print(active_bounds)
     # _bounds = {s:active_bounds.get(s) if s in active_bounds else (0,1) for s in order_book_ids}
-
     return {k:(max(l,0),min(u,1)) for k,(l,u) in active_bounds.items()}
 
 def assetRiskAllocation(order_book_ids,riskBudgetOptions):
@@ -266,8 +265,8 @@ def assetRiskAllocation(order_book_ids,riskBudgetOptions):
 
 class OptimizeMethod(Enum):
     INDICATOR_MAXIMIZATION = maximizing_series
-    RETURN_MAXIMIZATION = maximizing_series
-    VOLATILITY_MINIMIZATION = volatility
+    RETURN_MAXIMIZATION = maximizing_return_series
+    VOLATILITY_MINIMIZATION = variance
     TRACKING_ERROR_MINIMIZATION = trackingError
     MEAN_VARIANCE = mean_variance
     RISK_PARITY = risk_parity
@@ -478,7 +477,7 @@ def portfolio_optimize(order_book_ids, date, method=OptimizeMethod.VOLATILITY_MI
                 - industryNeutral: list 设定投资组合相对基准行业存在偏离的行业
                 - industryDeviation tuple 投资组合的行业权重相对基准行业权重容许偏离度的上下界
                 - styleNeutral: list 设定投资组合相对基准行业存在偏离的barra风格因子
-                - styleDeviation tuple 投资组合的风格因子权重相对基准风格容许偏离度的上下界
+                - styleDeviation float 投资组合的风格因子权重相对基准风格容许偏离度的上下界
                 - industryMatching:boolean 是否根据基准成分股进行配齐
     :param riskBudgetOptions: dict,优化器可选参数,该字典接受如下参数
                 - riskMetrics: 风险预算指标 默认为波动率 str volatility,tracking_error
@@ -502,13 +501,17 @@ def portfolio_optimize(order_book_ids, date, method=OptimizeMethod.VOLATILITY_MI
                 - output:是否同时返回个股优化权重和交易费用。默认为 False。若取值为True，则返回相关交易费用相关信息（佣金、印花税、市场冲击成本、申赎费用、日波动率、出清时间）。
     :return: pandas.Series优化后的个股权重, 传入order_book_id 中过滤的股票:{"次新股":subnew_stocks, "停牌股":suspended_stocks,"ST类股票":st_stocks,"退市股票":delisted_stocks}
     """
-    benchmarkOptions = {} if benchmarkOptions is None or (method is OptimizeMethod.RISK_BUDGETING) else benchmarkOptions
+    benchmarkOptions = {} if benchmarkOptions is None else benchmarkOptions
     benchmark = benchmarkOptions.get("benchmark", "000300.XSHG")
+    industryMatching = benchmarkOptions.get("industryMatching",False)
+
+    # 假设是风险预算 则 benchmarkOption设为空，避免在计算constraints上耗费时间
+    benchmarkOptions = {} if method is OptimizeMethod.RISK_BUDGETING else benchmarkOptions
+
     cov_estimator_in_option = benchmarkOptions.get('cov_estimator')
     trackingErrorThreshold = benchmarkOptions.get("trackingErrorThreshold")
     industryNeutral, industryDeviation = benchmarkOptions.get('industryNeutral'), benchmarkOptions.get('industryDeviation')
     styleNeutral, styleDeviation = benchmarkOptions.get("styleNeutral"), benchmarkOptions.get("styleDeviation")
-    industryMatching = benchmarkOptions.get("industryMatching")
 
     riskBudgetOptions = {} if riskBudegtOptions is None else riskBudegtOptions
     bounds = {} if bounds is None else bounds
@@ -530,20 +533,23 @@ def portfolio_optimize(order_book_ids, date, method=OptimizeMethod.VOLATILITY_MI
 
     if _benchmark is not None and assetsType == "Fund":
         raise InvalidArgument("OPTIMIZER: [基金] 不支持 包含跟踪误差 约束 的权重优化 ")
-    if (not isinstance(annualized_return,pd.Series)) and (method is OptimizeMethod.MEAN_VARIANCE or method is OptimizeMethod.RETURN_MAXIMIZATION):
+    if (method is OptimizeMethod.MEAN_VARIANCE or method is OptimizeMethod.RETURN_MAXIMIZATION) and (not isinstance(annualized_return,pd.Series)):
         raise InvalidArgument("OPTIMIZER: 均值方差和预期收益最大化时需要指定 annualized_return [预期年化收益]")
     if (not isinstance(indicator_series,pd.Series)) and (method is OptimizeMethod.INDICATOR_MAXIMIZATION):
         raise InvalidArgument("OPTIMIZER: 指标序列最大化时需要指定 indicator_series [指标序列]")
-    if method is OptimizeMethod.MEAN_VARIANCE and not (isinstance(returnRiskRatio,tuple) and (np.round(returnRiskRatio[0]+returnRiskRatio[1]) == 1)):
-        raise InvalidArgument("OPTIMIZER: 在均值方差模型中请指定returnRiskRatio且收益和风险的比例之和=1")
+    if method is OptimizeMethod.MEAN_VARIANCE and not (isinstance(returnRiskRatio,tuple) and (np.round(returnRiskRatio[0]+returnRiskRatio[1]) == 1) and returnRiskRatio[0]>=0 and returnRiskRatio[1]>=0):
+        raise InvalidArgument("OPTIMIZER: 在均值方差模型中请指定returnRiskRatio且收益和风险的比例之和=1,ReturnRiskRatio系数大于0")
     if not ((method is OptimizeMethod.RETURN_MAXIMIZATION or method is OptimizeMethod.INDICATOR_MAXIMIZATION) and benchmarkOptions.get("trackingErrorThreshold") is None):
         if not filter.get("suspend_filter"):
             raise InvalidArgument("此优化器涉及协方差矩阵计算，为避免空值对优化器的影响，请过滤停牌股票，将[suspend_filter]置为True")
         if not (isinstance(filter.get("subnew_filter"),int) and filter.get("subnew_filter")>=window):
             raise InvalidArgument("此优化器涉及协方差矩阵计算，为避免空值对优化器的影响，请过滤次新股，将[subnew_filter]设为>=window的整数")
+    bounds_rewrited = {k:bounds.get("*") for k in order_book_ids} if "*" in bounds else {k:bounds.get(k) if k in bounds else (0,1) for k in order_book_ids}
+    upperbounds = np.sum([s[1] for s in bounds_rewrited.values()])
+    if upperbounds<1:
+        raise InvalidArgument("输入的order_book_ids 上限之和 小于0 ，请重新输入")
 
     order_book_ids, union_stocks, subnew_stocks,delisted_stocks,suspended_stocks,st_stocks = assetsListHandler(filter,date=date,order_book_ids=order_book_ids,window=window,benchmark=_benchmark,assetsType=assetsType)
-
 
     if not quiet:
         if len(suspended_stocks) > 0:
@@ -554,9 +560,9 @@ def portfolio_optimize(order_book_ids, date, method=OptimizeMethod.VOLATILITY_MI
     if len(order_book_ids)<=2:
         raise OptimizationFailed("OPTIMIZER: 经过剔除后，合约数目不足2个")
 
-    components_weights = index_weights(benchmark, date).reindex(union_stocks).replace(np.nan,0) if benchmark is not None else None
+    components_weights = index_weights(benchmark, date) if benchmark is not None else None
     active_bounds = format_active_bounds_to_general_bounds(order_book_ids, components_weights, active_bounds)
-    constraints = constraintsGeneration(order_book_ids = union_stocks,assetsType = assetsType,benchmark=benchmark,
+    constraints,no_category_lists = constraintsGeneration(order_book_ids = union_stocks,assetsType = assetsType,benchmark=benchmark,
                           date=date,industryConstraints=industryConstraints,industryNeutral=industryNeutral,
                           industryDeviation=industryDeviation,styleConstraints=styleConstraints,styleNeutral=styleNeutral,
                           styleDeviation=styleDeviation,fundTypeConstraints=fundTypeConstraints)
@@ -581,6 +587,7 @@ def portfolio_optimize(order_book_ids, date, method=OptimizeMethod.VOLATILITY_MI
         c_m = covarianceEstimation(daily_returns=daily_returns,cov_estimator=cov_estimator) if method is OptimizeMethod.TRACKING_ERROR_MINIMIZATION or riskBudgetOptions.get("riskMetrics") == "tracking_error" else covarianceEstimation(daily_returns=daily_returns[order_book_ids],cov_estimator=cov_estimator)
 
     x0 = (pd.Series(1, index=order_book_ids) / len(order_book_ids)).reindex(union_stocks).replace(np.nan, 0).values
+    components_weights = components_weights.reindex(union_stocks).replace(np.nan,0) if benchmark is not None else None
 
     if isinstance(trackingErrorThreshold,float):
         cons_c_m = covarianceEstimation(daily_returns=daily_returns,cov_estimator=cov_estimator_in_option)
@@ -616,7 +623,7 @@ def portfolio_optimize(order_book_ids, date, method=OptimizeMethod.VOLATILITY_MI
     # 在均值方差模型中，先计算风险厌恶系数
     if method is OptimizeMethod.MEAN_VARIANCE:
         returnRiskRatio = returnRiskRatio[0]/returnRiskRatio[1]
-        risk_aversion_coefficient = (x0.dot(annualized_return))/(volatility(x0,**kwargs)*returnRiskRatio)
+        risk_aversion_coefficient = (x0.dot(annualized_return))/(variance(x0,**kwargs)*returnRiskRatio)
         kwargs.update({"risk_aversion_coefficient":risk_aversion_coefficient})
 
     # 当transactionCostOptions非空时，即用户希望在优化中考虑成本分析，需提供initialCapital或者currentPositions
@@ -624,7 +631,7 @@ def portfolio_optimize(order_book_ids, date, method=OptimizeMethod.VOLATILITY_MI
     if transactionCostOptions is not None :
         initialCapital = transactionCostOptions.get("initialCapital")
         currentPositions = transactionCostOptions.get("currentPositions")
-        if (initialCapital is None and (not isinstance(currentPositions,pd.Series))):
+        if initialCapital is None and (not isinstance(currentPositions,pd.Series)):
             raise Exception("考虑交易费用时, [initialCapital] 初始金额 [currentPositions] 当前持仓 必须指定其中之一 ")
         else :
             include_transaction_cost = True
@@ -651,6 +658,10 @@ def portfolio_optimize(order_book_ids, date, method=OptimizeMethod.VOLATILITY_MI
     # if (method is OptimizeMethod.RISK_BUDGETING and riskMetrics == "tracking_error") or method is OptimizeMethod.MEAN_VARIANCE:
     #     options = {'maxiter': max_iteration}
 
+    comments = {"次新股": subnew_stocks, "停牌股": suspended_stocks, "ST类股票": st_stocks, "退市股票": delisted_stocks,"无行业": no_category_lists}
+    comments = {s:k for k,v in comments.items() for s in v}
+    comments = pd.Series(comments).reindex(order_book_ids).fillna("")
+
     while True:
         if (method in [OptimizeMethod.VOLATILITY_MINIMIZATION,OptimizeMethod.MEAN_VARIANCE,OptimizeMethod.RETURN_MAXIMIZATION,OptimizeMethod.INDICATOR_MAXIMIZATION] or risk_parity_without_cons_and_bnds) and include_transaction_cost:
             optimization_results = minimize(_objectiveFunction, x0, bounds=bnds, jac=_get_gradient,constraints=constraints, method=iter_method, options=options)
@@ -664,13 +675,14 @@ def portfolio_optimize(order_book_ids, date, method=OptimizeMethod.VOLATILITY_MI
                 # 获得未分配行业的权重与成分股权重
                 unallocatedWeight, supplementStocks = benchmark_industry_matching(order_book_ids, benchmark, date)
                 optimized_weight = pd.concat([optimized_weight * (1 - unallocatedWeight), supplementStocks])
-            return optimized_weight,{"次新股":subnew_stocks, "停牌股":suspended_stocks,"ST类股票":st_stocks,"退市股票":delisted_stocks}
+            return optimized_weight,comments
         elif optimization_results.status == 8:
             if options['ftol'] >= 1e-3:
-                raise Exception(u'OPTIMIZER: 优化无法收敛到足够精度')
+                return pd.Series(1, index=order_book_ids) / len(order_book_ids),comments
             options['ftol'] *=10
         else:
-            raise Exception(optimization_results.message)
+            return pd.Series(1, index=order_book_ids) / len(order_book_ids),comments
+            # raise Exception(optimization_results.message)
 
 
 # COMMENTS:
