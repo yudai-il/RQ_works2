@@ -97,18 +97,18 @@ def trackingError(x,**kwargs):
     result = np.sqrt(np.dot(np.dot(X, c_m * 252),X))
     return result
 
-def volatility(x,**kwargs):
+def variance(x,**kwargs):
     c_m = kwargs.get("c_m")
     return np.dot(np.dot(x,c_m*252),x)
 
 def mean_variance(x,**kwargs):
 
-    annualized_return = kwargs.get("annualized_return")
+    annualized_return = kwargs.get("series")
     risk_aversion_coefficient = kwargs.get("risk_aversion_coefficient")
 
     if not isinstance(annualized_return,pd.Series):
         raise Exception("在均值方差优化中请指定 预期收益")
-    portfolio_volatility = volatility(x,**kwargs)
+    portfolio_volatility = variance(x,**kwargs)
 
     return -x.dot(annualized_return) + np.multiply(risk_aversion_coefficient,portfolio_volatility)
 
@@ -116,10 +116,14 @@ def maximizing_series(x,**kwargs):
     series = kwargs.get("series")
     return -x.dot(series)
 
+def maximizing_return_series(x,**kwargs):
+    series = kwargs.get("series")
+    return -x.dot(series)
+
 def risk_budgeting(x,**kwargs):
     riskMetrics = kwargs.get("riskMetrics")
     if riskMetrics == "volatility":
-        return np.sqrt(volatility(x, **kwargs))
+        return np.sqrt(variance(x, **kwargs))
     else:
         assert riskMetrics == "tracking_error"
         riskBudgets = kwargs.get("riskBudgets").values
