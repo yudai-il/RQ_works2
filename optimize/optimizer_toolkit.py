@@ -9,6 +9,12 @@ from scipy.stats import norm
 import scipy.spatial as scsp
 from.exception import *
 
+"""
+feature branch a
+此版为方便调试每个模块的功能，在运行效率上存在不足
+整合模块详见 feature branch b
+"""
+
 def get_subnew_delisted_assets(order_book_ids,date,N,type="CS"):
     """
     # 获得某日上市小于N天的次新股
@@ -46,7 +52,7 @@ def get_suspended_stocks(stocks,end_date,N):
     start_date = rqdatac.trading_date_offset(end_date,-N)
     volume = get_price(stocks, start_date, end_date, fields="volume")
     suspended_day = (volume == 0).sum(axis=0)
-    return suspended_day[suspended_day>0].index.tolist()
+    return suspended_day[suspended_day>0.5*N].index.tolist()
 
 def assetsListHandler(filter,**kwargs):
 
@@ -55,13 +61,11 @@ def assetsListHandler(filter,**kwargs):
     benchmark = kwargs.get("benchmark")
     date = kwargs.get("date")
     order_book_ids = kwargs.get("order_book_ids")
-    # window = kwargs.get("window")
-    window = subnew_filter = filter.get("subnew_filter")
+    window = filter.get("subnew_filter")
 
     assetsType = kwargs.get("assetsType")
 
     if assetsType == "CS":
-
         benchmark_components = index_components(benchmark, date=date) if benchmark is not None else []
         union_stocks = sorted(set(benchmark_components).union(set(order_book_ids)))
         st_stocks = get_st_stocks(union_stocks,date) if st_filter else []
@@ -84,29 +88,29 @@ def assetsListHandler(filter,**kwargs):
         order_book_ids = sorted(set(order_book_ids)-set(subnew_funds)-set(delisted_funds))
         return order_book_ids,order_book_ids,subnew_funds,delisted_funds
 
-def assetsDistinguish(order_book_ids):
-    stocksInstruments = instruments(order_book_ids)
-    fundsInstruments = fund.instruments(order_book_ids)
 
-    stocksInstrumentsTypes = ([instrument.type for instrument in stocksInstruments])
-    cons_all_funds = len(fundsInstruments) == len(order_book_ids)
-    cons_all_stocks = stocksInstrumentsTypes.count("CS") == len(order_book_ids)
+def ensure_same_type_instruments(order_book_ids):
+
+    instruments_func = rqdatac.instruments
+    instrument = instruments_func(order_book_ids[0])
+    if instrument is None:
+        instrument = rqdatac.fund.instruments(order_book_ids[0])
+        if instrument is not None:
+            instruments_func = rqdatac.fund.instruments
+        else:
+            raise InvalidArgument('unknown instrument: {}'.format(order_book_ids[0]))
+
+    all_instruments_detail = instruments_func(order_book_ids)
+    instrumentsTypes = ([instrument.type for instrument in all_instruments_detail])
+    cons_all_stocks = instrumentsTypes.count("CS") == len(order_book_ids)
+    cons_all_funds = instrumentsTypes.count("PublicFund") == len(order_book_ids)
 
     if not (cons_all_funds or cons_all_stocks):
-        raise Exception("输入order_book_ids必须全为股票或者基金")
+        raise InvalidArgument("传入的合约[order_book_ids]应该为统一类型")
     assetsType = "Fund" if cons_all_funds else "CS"
     return assetsType
 
-
 def trackingError(x,**kwargs):
-    """
-    跟踪误差约束
-    :param x: 权重
-    :param union_stocks:股票并集
-    :param index_weights: 基准权重
-    :param covMat: 协方差矩阵
-    :return: float
-    """
     covMat,_index_weights = kwargs.get("covMat"),kwargs.get("index_weights")
     X = x - _index_weights
     result = np.sqrt(np.dot(np.dot(X, covMat * 252),X))
@@ -114,26 +118,23 @@ def trackingError(x,**kwargs):
 
 def volatility(x,**kwargs):
     covMat = kwargs.get("covMat")
-    """
-    计算投资组合波动率
-    :param x:
-    :param covMat:
-    :return:
-    """
     return np.dot(np.dot(x,covMat*252),x)
 
 def mean_variance(x,**kwargs):
 
-    annualized_return = kwargs.get("annualized_return")
+    annualized_return = kwargs.get("series")
     risk_aversion_coefficient = kwargs.get("risk_aversion_coefficient")
 
     if not isinstance(annualized_return,pd.Series):
-        raise Exception("在均值方差优化中请指定 预期收益")
+        raise InvalidArgument("在均值方差优化中请指定 预期收益")
     portfolio_volatility = volatility(x,**kwargs)
 
     return -x.dot(annualized_return) + np.multiply(risk_aversion_coefficient,portfolio_volatility)
 
-def maximizing_series(x,**kwargs):
+def maximizing_indicator_series(x,**kwargs):
+    indicator_series = kwargs.get("series")
+    return -x.dot(indicator_series)
+def maximizing_return_series(x,**kwargs):
     indicator_series = kwargs.get("series")
     return -x.dot(indicator_series)
 
@@ -165,8 +166,7 @@ def risk_parity(x,**kwargs):
         return risk_parity_with_con_obj_fun(x)
     else:
         c=15
-        res =  np.dot(x, np.dot(c_m, x)) - c * sum(np.log(x))
-        # print(res)
+        res = np.dot(x, np.dot(c_m, x)) - c * sum(np.log(x))
         return res
 
 
@@ -179,21 +179,24 @@ def industry_customized_constraint(order_book_ids,industryConstraints,date):
     :return:
     """
     constraints = []
-    industries_labels = missing_industryLabel_handler(order_book_ids,date)
 
     if industryConstraints is None or len(industryConstraints) == 0:
         return []
-    elif "*" in industryConstraints.keys() :
+    industries_labels = shenwan_instrument_industry(order_book_ids,date)['index_name']
+    shenwan_data = pd.DataFrame(industries_labels)
+    shenwan_data['values'] = 1
+    shenwan_dummy = shenwan_data.reset_index().pivot(index="index",columns="index_name",values="values").fillna(0)
+
+    if "*" in industryConstraints.keys():
         constrainted_industry = sorted(set(industries_labels))
         industryConstraints = {s: industryConstraints.get("*") for s in constrainted_industry}
     else:
         constrainted_industry = sorted(set(industries_labels)& set(industryConstraints.keys()))
 
     for industry in constrainted_industry:
-        industry_stock_position = industries_labels.index.get_indexer(industries_labels[industries_labels==industry].index)
         lower,upper = industryConstraints.get(industry)[0],industryConstraints.get(industry)[1]
-        constraints.append({"type":"ineq","fun":lambda x:sum(x[i] for i in industry_stock_position)-lower})
-        constraints.append({"type":"ineq","fun":lambda x:sum(x[i] for i in -industry_stock_position)+upper})
+        constraints.append({"type":"ineq","fun":lambda x:x.dot(shenwan_dummy[industry]) - lower})
+        constraints.append({"type":"ineq","fun":lambda x:upper - x.dot(shenwan_dummy[industry])})
 
     return constraints
 
@@ -203,7 +206,7 @@ def industry_neutralize_constraint(order_book_ids, date,deviation,industryNeutra
     :param order_book_ids: list 股票列表
     :param date: string 日期
     :param benchmark: string 基准指数
-    :param deviation: tuple 偏离上下限
+    :param deviation: float 偏离上下限
     :param industryNeutral: 受约束的行业列表
     :return:
     """
@@ -212,7 +215,11 @@ def industry_neutralize_constraint(order_book_ids, date,deviation,industryNeutra
 
     constraints = []
     benchmark_components = index_weights(benchmark, date)
-    industry_labels = missing_industryLabel_handler(list(set(benchmark_components.index.tolist()).union(set(order_book_ids))),date)
+    industry_labels = shenwan_instrument_industry(list(set(benchmark_components.index.tolist()).union(set(order_book_ids))),date)['index_name']
+    shenwan_data = pd.DataFrame(industry_labels)
+    shenwan_data['values'] = 1
+    shenwan_dummy = shenwan_data.reset_index().pivot(index="index",columns="index_name",values="values").fillna(0).loc[order_book_ids]
+
     benchmark_industry_label = industry_labels.loc[benchmark_components.index.tolist()]
     benchmark_merged_df = pd.concat([benchmark_components, benchmark_industry_label], axis=1)
     benchmark_industry_allocation = benchmark_merged_df.groupby(['index_name']).sum()
@@ -227,36 +234,27 @@ def industry_neutralize_constraint(order_book_ids, date,deviation,industryNeutra
     elif industryNeutral=="*":
         constrainted_industry = constrainted_industry
     else:
-        raise Exception("请输入'*'或者申万一级行业列表")
+        raise InvalidArgument("请输入'*'或者申万一级行业列表")
 
-    portfolio_industry_constraints = dict(
-        (industry, (benchmark_industry_allocation.loc[industry]['weight'] * (1 - deviation[0]),
-                    benchmark_industry_allocation.loc[industry]['weight'] * (1 + deviation[1]))) for industry in
-        constrainted_industry)
+    portfolio_industry_constraints = dict((industry, (benchmark_industry_allocation.loc[industry]['weight'] * (1 - deviation),
+                    benchmark_industry_allocation.loc[industry]['weight'] * (1 + deviation))) for industry in constrainted_industry)
 
     for industry in constrainted_industry:
-        industry_stock_position = portfolio_industry_label.index.get_indexer(
-            portfolio_industry_label[portfolio_industry_label == industry].index)
-
-        constraints.append({'type': 'ineq', 'fun': lambda x:
-        sum(x[i] for i in industry_stock_position) - portfolio_industry_constraints[industry][0]})
-        constraints.append({'type': 'ineq', 'fun': lambda x:
-        portfolio_industry_constraints[industry][1] - sum(x[i] for i in industry_stock_position)})
+        lower,upper = portfolio_industry_constraints[industry][0],portfolio_industry_constraints[industry][1]
+        constraints.append({"type":"ineq","fun":lambda x:x.dot(shenwan_dummy[industry])-lower})
+        constraints.append({"type":"ineq","fun":lambda x:upper - x.dot(shenwan_dummy[industry])})
     return constraints
 
 def validateConstraints(order_book_ids,bounds,date,industryConstraints,industryNeutral,styleConstraints,styleNeutral):
-    # 检验行业/风格的 自定义约束 和 偏离约束不能存在重复定义
     def _constraintsCheck(constraints, neutral):
         if constraints is None or neutral is None:
             pass
         elif ("*" in constraints.keys() and len(neutral) > 0) or ("*" == neutral and len(constraints) > 0):
-            raise Exception("自定义约束 和 偏离约束 不能存在重叠部分")
+            raise InvalidArgument("自定义约束 和 偏离约束 不能存在重叠部分")
         elif set(constraints) & set(neutral):
-            raise Exception("自定义约束 和 偏离约束 不能存在重叠部分")
+            raise InvalidArgument("自定义约束 和 偏离约束 不能存在重叠部分")
 
     def _boundsCheck(bounds):
-        bounds = {} if bounds is None else bounds
-        bounds = bounds
         lowerCumsum = np.sum(s[0] for s in bounds.values())
 
         for _key in bounds:
@@ -269,22 +267,20 @@ def validateConstraints(order_book_ids,bounds,date,industryConstraints,industryN
                 raise InvalidArgument(u'OPTIMIZER: 约束的下限 {} 高于上限 {}'.format(lower, upper))
 
         if len(bounds) > 0 and lowerCumsum>1 :
-            raise Exception("OPTIMIZER: 约束的下限之和大于1")
-    #     对于行业
+            raise InvalidArgument("OPTIMIZER: 约束的下限之和大于1")
+
     _boundsCheck(bounds)
     _boundsCheck(industryConstraints)
-
     upperCumsum = np.sum(s[1] for s in bounds.values())
-    #
     if upperCumsum<1:
         raise InvalidArgument(u'OPTIMIZER: 约束的上限之和小于1')
 
     _constraintsCheck(industryConstraints,industryNeutral)
     _constraintsCheck(styleConstraints,styleNeutral)
     if sorted(set(shenwan_instrument_industry(order_book_ids)['index_name'])) == sorted(industryConstraints.keys()) and sum([s[1] for s in industryConstraints.values()])<1:
-        raise Exception("order_book_ids 权重之和小于 1, 请重新定义行业权重上下限")
+        raise InvalidArgument("order_book_ids 权重之和小于 1, 请重新定义行业权重上下限")
 
-    missing_industry = set(industryConstraints)- set(missing_industryLabel_handler(order_book_ids,date))
+    missing_industry = (set(industryConstraints)|set([] if industryNeutral is None else industryNeutral))- set(shenwan_instrument_industry(order_book_ids,date)['index_name'])
     if missing_industry:
         warnings.warn("order_book_ids 中没有股票属于{}行业, 已忽略其行业约束".format(missing_industry))
 
@@ -296,35 +292,18 @@ def benchmark_industry_matching(order_book_ids, benchmark, date):
     :param date:
     :return:
     """
-
     # 获取基准行业配置信息
-
     benchmark_components = index_weights(benchmark, date)
-
-    benchmark_industry_label = missing_industryLabel_handler(list(benchmark_components.index), date)
-
+    benchmark_industry_label = shenwan_instrument_industry(list(benchmark_components.index), date)['index_name']
     benchmark_merged_df = pd.concat([benchmark_components, benchmark_industry_label], axis=1)
-
     benchmark_industry_allocation = benchmark_merged_df.groupby(['index_name']).sum()
-
-    # 获取投资组合行业配置信息
-
-    portfolio_industry_label = missing_industryLabel_handler(order_book_ids, date)
-
+    portfolio_industry_label = shenwan_instrument_industry(order_book_ids, date)['index_name']
     portfolio_industry = list(portfolio_industry_label.unique())
-
     missing_industry = list(set(benchmark_industry_allocation.index) - set(portfolio_industry))
-
-    # 若投资组合均配置了基准所包含的行业，则不需要进行配齐处理
-
     if (len(missing_industry) == 0):
-
         return None, None
-
     else:
-
         matching_component = benchmark_merged_df.loc[benchmark_merged_df['index_name'].isin(missing_industry)]
-
     return matching_component['weight'].sum(), matching_component['weight']
 
 def style_customized_constraint(order_book_ids,styleConstraints,date):
@@ -335,20 +314,15 @@ def style_customized_constraint(order_book_ids,styleConstraints,date):
     :return:
     """
     constrainedStyle = ['beta', 'momentum', 'size', 'earnings_yield', 'residual_volatility', 'growth',
-                        'book_to_price',
-                        'leverage', 'liquidity', 'non_linear_size']
+                        'book_to_price','leverage', 'liquidity', 'non_linear_size']
     if styleConstraints is None or len(styleConstraints) == 0:
         return []
-
     elif "*" in styleConstraints.keys():
-
         styleConstraints = {s:styleConstraints.get("*") for s in constrainedStyle}
     else:
         constrainedStyle = sorted(set(styleConstraints.keys())&set(constrainedStyle))
     style_factor_exposure = get_style_factor_exposure(order_book_ids,date,date,'all').xs(date,level=1)
-
     constraints = []
-
     for factor in constrainedStyle:
         lower,upper = styleConstraints.get(factor)[0],styleConstraints.get(factor)[1]
         constraints.append({"type":'ineq',"fun":lambda x:x.dot(style_factor_exposure[factor])-lower})
@@ -365,10 +339,8 @@ def style_neutralize_constraint(order_book_ids,date,deviation,factors,benchmark)
     :param benchmark: 基准
     :return:
     """
-
     constraintedStyle = ['beta', 'momentum', 'size', 'earnings_yield', 'residual_volatility', 'growth',
-                        'book_to_price',
-                        'leverage', 'liquidity', 'non_linear_size']
+                        'book_to_price','leverage', 'liquidity', 'non_linear_size']
 
     if factors is None or deviation is None:
         return []
@@ -386,45 +358,21 @@ def style_neutralize_constraint(order_book_ids,date,deviation,factors,benchmark)
     elif isinstance(factors,list):
         constrainted_style = sorted(set(constraintedStyle)&set(factors))
     else:
-        raise Exception("请在风格偏离约束中指定 * 或者风格因子列表")
+        raise InvalidArgument("请在风格偏离约束中指定 * 或者风格因子列表")
 
     benchmark_components_data = style_factor_exposure.loc[benchmark_components.index,constrainted_style]
     portfolio_data = style_factor_exposure.loc[order_book_ids,constrainted_style]
 
     benchmark_style_exposure = benchmark_components.dot(benchmark_components_data)
 
-    portfolio_style_constraints = {style :(benchmark_style_exposure[style]*(1-deviation[0]),benchmark_style_exposure[style]*(1+deviation[1])) for style in benchmark_style_exposure.index}
+    portfolio_style_constraints = {style:(benchmark_style_exposure[style]*(1-deviation),benchmark_style_exposure[style]*(1+deviation)) for style in benchmark_style_exposure.index}
 
     for style in constrainted_style:
-        constraints.append({"type":"ineq","fun":lambda x: x.dot(portfolio_data[style])-portfolio_style_constraints[style][0]})
-        constraints.append({"type":"ineq","fun":lambda x: portfolio_style_constraints[style][1] - x.dot(portfolio_data[style])})
-
+        # 当因子暴露为正时，因子暴露度*（1-偏离度<因子暴露度*（1+偏离度）;当因子暴露为负时，反因子暴露度*（1-偏离度）>因子暴露度*（1+偏离度）
+        lower,upper = min(portfolio_style_constraints[style]),max(portfolio_style_constraints[style])
+        constraints.append({"type":"ineq","fun":lambda x: x.dot(portfolio_data[style])-lower})
+        constraints.append({"type":"ineq","fun":lambda x: upper - x.dot(portfolio_data[style])})
     return constraints
-
-
-def missing_industryLabel_handler(order_book_ids,date):
-
-    return shenwan_instrument_industry(order_book_ids, date=date)['index_name']
-
-    # industry = shenwan_instrument_industry(order_book_ids,date=date)['index_name'].reindex(order_book_ids)
-    # missing_stocks = industry[industry.isnull()].index.tolist()
-    #
-    # if len(missing_stocks):
-    #     min_date = pd.to_datetime([instruments(s).listed_date for s in missing_stocks]).min()
-    #     supplemented_data = {}
-    #     for i in range(1,6,1):
-    #         datePoint = (min_date+np.timedelta64(i*22,"D")).date()
-    #         # if datePoint
-    #         industryLabels = shenwan_instrument_industry(missing_stocks,datePoint)['index_name']
-    #         supplemented_data.update(industryLabels.to_dict())
-    #         missing_stocks = sorted(set(missing_stocks) - set(industryLabels.index))
-    #         if len(missing_stocks) == 0:
-    #             break
-    #     industry.loc[supplemented_data.keys()] = pd.Series(supplemented_data)
-    # return industry
-
-# 2018-07-09 calculating var and cvar
-
 
 def fund_type_constraints(order_book_ids,fundTypeConstraints):
     """
@@ -445,6 +393,12 @@ def fund_type_constraints(order_book_ids,fundTypeConstraints):
         constraints.append({'typr':"ineq","fun":lambda x : -sum(x[i] for i in fund_positions) +fundBounds[0]})
     return constraints
 
+
+# def get_shenwan_data(order_book_ids,date):
+#
+#     shenwan_data = shenwan_instrument_industry(order_book_ids, date=date)['index_name']
+#     null_data_list = list(set(order_book_ids) - set(shenwan_data.index.tolist()))
+#     return shenwan_data,null_data_list
 
 
 def calcTransactionCost(order_book_ids,x,date,assetType,transactionOptions):
