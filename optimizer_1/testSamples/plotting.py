@@ -4,7 +4,7 @@ import rqdatac
 rqdatac.init('rice','rice',('192.168.10.64',16030))
 from rqdatac import *
 
-return_risk = pd.read_pickle("optimizer_v_develop/testResults/imformations.pkl")
+return_risk = pd.read_pickle("optimizer_v_develop/testSamples/imformations.pkl")
 
 
 import matplotlib.pyplot as plt
@@ -23,7 +23,7 @@ plt.grid(True)
 plt.show()
 
 
-weights = pd.read_pickle("optimizer_v_develop/testResults/weights.pkl")
+weights = pd.read_pickle("optimizer_v_develop/testSamples/weights.pkl")
 import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei'] # 步骤一（替换sans-serif字体）
 plt.rcParams['axes.unicode_minus'] = False   # 步骤二（解决坐标轴负数的负号显示问题）

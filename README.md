@@ -1,9 +1,10 @@
-#Notes During Practising
+#  Notes During Practising
 
 此目录下是一些实习期的代码
 
 - 因子方面包括
     -
+>
         1、显式因子计算
         2、简易行业分析
         3、跟踪误差计算
@@ -20,7 +21,7 @@
     > optimizer_2是综合各板块功能的版本，增强了可读性
     
 <hr/>
--
+
 
 
 > 一、目标函数
