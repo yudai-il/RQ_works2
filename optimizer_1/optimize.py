@@ -14,6 +14,8 @@ class OptimizeMethod(Enum):
     RISK_BUDGETING = risk_budgeting
 
 def objectiveFunction(x, function, **kwargs):
+    if function is OptimizeMethod.VOLATILITY_MINIMIZATION:
+        return np.sqrt(function(x,**kwargs))
     return function(x, **kwargs)
 
 def constraintsGeneration(order_book_ids,assetsType, union_stocks, benchmark, date, bounds,active_bounds, industryConstraints, industryNeutral,
@@ -30,6 +32,10 @@ def constraintsGeneration(order_book_ids,assetsType, union_stocks, benchmark, da
     bounds.update(active_bounds)
     bounds = {s:bounds.get(s) if s in bounds else (0, 1) for s in union_stocks}
     bnds = tuple([bounds.get(s) for s in union_stocks])
+
+    if np.sum(s[1] for s in bounds.values())<1:
+        warnings.warn("经过剔除后，bnds 上限之和小于1,已忽略指定的资产上下限")
+        bnds = tuple([(0,1)]*len(union_stocks))
 
     constraints = [{"type": "eq", "fun": lambda x: sum(x) - 1}]
     if assetsType == "CS":
@@ -89,6 +95,8 @@ def assetRiskAllocation(order_book_ids,riskBudgetOptions):
             assetRank = assetRank.astype(np.float64)
         except:
             print("assetRank只接受float或int类型的series")
+        if len(assetRank[assetRank<0])>0:
+            raise InvalidArgument("输入风险预算的资产评级不能存在负数")
         assetRank/=assetRank.sum()
         return assetRank
     else:
@@ -129,7 +137,7 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
                             annualized_return = None,fundTypeConstraints = None,returnRiskRatio = None,
                            window=126, bounds=None,active_bounds = None, industryConstraints=None, styleConstraints=None,
                             max_iteration = 1000,tol = 1e-8,eps = 1.4901161193847656e-08,quiet = False,filter=None,
-                           benchmarkOptions=None,riskBudegtOptions=None,transactionCostOptions=None):
+                           benchmarkOptions=None,riskBudgetOptions=None,transactionCostOptions=None):
     """
     :param order_book_ids:股票列表
     :param date: 优化日期 如"2018-06-20"
@@ -203,7 +211,7 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
     industryNeutral, industryDeviation = benchmarkOptions.get('industryNeutral'), benchmarkOptions.get('industryDeviation')
     styleNeutral, styleDeviation = benchmarkOptions.get("styleNeutral"), benchmarkOptions.get("styleDeviation")
 
-    riskBudgetOptions = {} if riskBudegtOptions is None else riskBudegtOptions
+    riskBudgetOptions = {} if riskBudgetOptions is None else riskBudgetOptions
     bounds = {} if bounds is None else bounds
     filter = {} if filter is None or not isinstance(filter,dict) else filter
     active_bounds = {} if active_bounds is None else active_bounds
@@ -221,10 +229,12 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
     _benchmark = benchmark if (method is OptimizeMethod.TRACKING_ERROR_MINIMIZATION or isinstance(trackingErrorThreshold,float) or (riskBudgetOptions.get("riskMetrics") == "tracking_error")) else None
     assetsType = ensure_same_type_instruments(order_book_ids)
 
+
+
     if _benchmark is not None and assetsType == "Fund":
-        raise Exception("OPTIMIZER: [基金] 不支持 包含跟踪误差 约束 的权重优化 ")
+        raise InvalidArgument("OPTIMIZER: [基金] 不支持 包含跟踪误差 约束 的权重优化 ")
     if (not isinstance(annualized_return,pd.Series)) and (method is OptimizeMethod.MEAN_VARIANCE or method is OptimizeMethod.RETURN_MAXIMIZATION):
-        raise Exception("OPTIMIZER: 均值方差和预期收益最大化时需要指定 annualized_return [预期年化收益]")
+        raise InvalidArgument("OPTIMIZER: 均值方差和预期收益最大化时需要指定 annualized_return [预期年化收益]")
     if (not isinstance(indicator_series,pd.Series)) and (method is OptimizeMethod.INDICATOR_MAXIMIZATION):
         raise InvalidArgument("OPTIMIZER: 指标序列最大化时需要指定 indicator_series [指标序列]")
     if method is OptimizeMethod.MEAN_VARIANCE and not (isinstance(returnRiskRatio,tuple) and (np.round(returnRiskRatio[0]+returnRiskRatio[1]) == 1) and returnRiskRatio[0]>=0 and returnRiskRatio[1]>=0):
@@ -234,6 +244,19 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
             raise InvalidArgument("此优化器涉及协方差矩阵计算，为避免空值对优化器的影响，请过滤停牌股票，将[suspend_filter]置为True")
         if not (isinstance(filter.get("subnew_filter"),int) and filter.get("subnew_filter")>=window):
             raise InvalidArgument("此优化器涉及协方差矩阵计算，为避免空值对优化器的影响，请过滤次新股，将[subnew_filter]设为>=window的整数")
+
+    if method is OptimizeMethod.INDICATOR_MAXIMIZATION:
+        indicator_series = (indicator_series-indicator_series.mean())/indicator_series.std()
+
+    bounds_rewrited = {k:bounds.get("*") for k in order_book_ids} if "*" in bounds else {k:bounds.get(k) if k in bounds else (0,1) for k in order_book_ids}
+    upperbounds = np.sum([s[1] for s in bounds_rewrited.values()])
+    if upperbounds<1:
+        raise InvalidArgument("输入的order_book_ids 上限之和 小于0 ，请重新输入")
+
+    if method is OptimizeMethod.MEAN_VARIANCE and returnRiskRatio[0] == 1:
+        method = OptimizeMethod.RETURN_MAXIMIZATION
+    elif method is OptimizeMethod.MEAN_VARIANCE and returnRiskRatio[1] == 1:
+        method = OptimizeMethod.VOLATILITY_MINIMIZATION
 
     # 在进行股票池处理之前进行bounds检验
     bounds_rewrited = {k:bounds.get("*") for k in order_book_ids} if "*" in bounds else {k:bounds.get(k) if k in bounds else (0,1) for k in order_book_ids}
@@ -336,11 +359,17 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
         else :
             include_transaction_cost = True
     # print(include_transaction_cost)
-    # include_transaction_cost = False
+
+    # transactionCostOptions_initial = transactionCostOptions.copy()
+    # transactionCostOptions_initial.update({"output":True})
+    # initial_transaction_costs = calcTransactionCost(order_book_ids,x0,date,assetsType, transactionCostOptions_initial)
 
     def _objectiveFunction(x):
         if include_transaction_cost:
-            return objectiveFunction(x, method, **kwargs) - calcTransactionCost(order_book_ids,x,date,assetsType, transactionCostOptions)
+            res = calcTransactionCost(order_book_ids,x,date,assetsType, transactionCostOptions)
+            return res
+            # return (res*1000)**4
+            # return objectiveFunction(x, method, **kwargs) + calcTransactionCost(order_book_ids,x,date,assetsType, transactionCostOptions)
         else:
             return objectiveFunction(x,method,**kwargs)
 
@@ -383,10 +412,14 @@ def portfolio_optimize(order_book_ids, date,indicator_series=None, method=Optimi
             optimized_weight = pd.Series(optimization_results['x'], index=union_stocks).reindex(order_book_ids)
             optimized_weight /= optimized_weight.sum()
 
+            # transactionCostOptions.update({"output":True})
+            # res2 = calcTransactionCost(order_book_ids, optimized_weight.values, date, assetsType, transactionCostOptions)
+
             if industryMatching:
                 # 获得未分配行业的权重与成分股权重
                 unallocatedWeight, supplementStocks = benchmark_industry_matching(order_book_ids, benchmark, date)
                 optimized_weight = pd.concat([optimized_weight * (1 - unallocatedWeight), supplementStocks])
+            #     ,pcr_risk,initial_vol,pcr_initial,mcr_initial initial_transaction_costs
             return optimized_weight,comments
         # 假设找不到 一个 使得梯度下降的方向 则 减小一阶偏导的步长 或者 增大收敛精度，这里选择减小一阶偏导的步长
         elif optimization_results.status == 8:
