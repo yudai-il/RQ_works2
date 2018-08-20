@@ -10,6 +10,7 @@
     <stocks_pool_generator> :构建投资组合
     <测试_fraction1>第1-3种测试
     <测试_fraction2>均值方差测试
+    <plotting> 画均值方差时的代码
     
 
 
